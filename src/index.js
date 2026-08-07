@@ -15,9 +15,12 @@ import * as Bridge from './bridge.js';
 import * as Codec from './codec.js';
 import * as CodecV0 from './codec-v0.js';
 import * as Skin from './skin.js';
+import * as Regions from './regions.js';
+import * as Fmt from './format.js';
 import { EarsPreview } from './renderer.js';
 
 const PLUGIN_ID = 'ears_skin_editor';
+const FORMATS = ['skin', Fmt.FORMAT_ID];
 
 const state = {
 	preview: null,
@@ -44,12 +47,15 @@ const vm = {
 	editingCape: false,
 	commonVersion: '',
 	notices: [],
+	regions: [],
+	regionSummary: { count: 0, total: 0, empty: 0 },
+	showRegions: false,
 };
 
 // --- reading / writing -----------------------------------------------------
 
 function isSkinProject() {
-	return !!(Project && Format && Format.id === 'skin');
+	return !!(Project && Format && FORMATS.includes(Format.id));
 }
 
 function detectSlim() {
@@ -118,6 +124,10 @@ function refresh() {
 	state.preview.build(objects);
 	vm.missingParts = Array.from(state.preview.missingParts);
 
+	state.regions = Regions.computeRegions(objects);
+	vm.regions = state.regions.filter((r) => r.texture === 'skin');
+	vm.regionSummary = Regions.summarise(state.regions, imageData);
+
 	updateNotices();
 	syncAuxTextures();
 	Canvas.updateView({ elements: [], selection: false });
@@ -167,6 +177,30 @@ function commitAlfalfa(undoName = 'Edit Ears wing/cape data') {
 	if (ok) refresh();
 }
 
+/**
+ * Paint a placeholder into the Ears regions that are still fully transparent,
+ * so every enabled feature becomes visible and can be painted over.
+ */
+function fillRegions(onlyEmpty) {
+	const texture = Skin.getSkinTexture();
+	if (!texture || !state.regions.length) return;
+
+	let painted = 0;
+	state.suspend = true;
+	const ok = Skin.editTexture(
+		texture,
+		(imageData) => {
+			painted = Regions.fillEmptyRegions(imageData, state.regions, { onlyEmpty });
+		},
+		onlyEmpty ? 'Fill empty Ears regions' : 'Fill Ears regions'
+	);
+	state.suspend = false;
+	if (ok) {
+		Blockbench.showQuickMessage(`Painted ${painted} pixel${painted === 1 ? '' : 's'}`, 2000);
+		refresh();
+	}
+}
+
 function updateNotices() {
 	const notices = [];
 	const f = vm.features;
@@ -183,6 +217,9 @@ function updateNotices() {
 	}
 	if (vm.missingParts.length) {
 		notices.push(`This project has no bone for: ${vm.missingParts.join(', ')}. Those features can't be previewed.`);
+	}
+	if (vm.features.enabled && vm.regionSummary.empty > 0 && vm.regionSummary.empty === vm.regionSummary.total) {
+		notices.push('None of the texture regions these features read from have been drawn yet, so nothing will show in game. Use "Fill empty regions" below to see where to paint.');
 	}
 	vm.notices = notices;
 }
@@ -322,7 +359,7 @@ function buildPanel() {
 		id: PLUGIN_ID,
 		icon: 'pets',
 		growable: true,
-		condition: { formats: ['skin'] },
+		condition: { formats: FORMATS },
 		default_position: { slot: 'right_bar', float_position: [0, 0], float_size: [340, 700], height: 560 },
 		component: {
 			name: 'ears-panel',
@@ -334,6 +371,7 @@ function buildPanel() {
 				exportAux: (key) => exportAux(key),
 				editAux: (key) => editAuxInProject(key),
 				stopEditingAux: (key) => stopEditingAux(key),
+				fillRegions: (onlyEmpty) => fillRegions(onlyEmpty),
 				openManipulator: () => Blockbench.openLink('https://ears.y2k.diy/manipulator/'),
 				toggleEnabled() {
 					vm.features.enabled = !vm.features.enabled;
@@ -494,6 +532,26 @@ function buildPanel() {
 							</div>
 						</fieldset>
 
+						<template v-if="vm.features.enabled && vm.regions.length">
+							<h4 @click="vm.showRegions = !vm.showRegions" class="ears_clickable">
+								Texture regions
+								<span class="ears_badge">{{ vm.regionSummary.empty }} / {{ vm.regionSummary.total }} px undrawn</span>
+							</h4>
+							<div class="ears_hint">
+								These are the pixels your current features read from — derived from the
+								geometry, so it's exactly what Ears will sample.
+							</div>
+							<div class="ears_row ears_buttons">
+								<button @click="fillRegions(true)" title="Paint a placeholder into regions that are still fully transparent">Fill empty regions</button>
+								<button @click="vm.showRegions = !vm.showRegions">{{ vm.showRegions ? 'Hide list' : 'Show list' }}</button>
+							</div>
+							<ul v-if="vm.showRegions" class="ears_regions">
+								<li v-for="r in vm.regions">
+									<code>{{ r.x }}, {{ r.y }}</code> &mdash; {{ r.w }}&times;{{ r.h }}
+								</li>
+							</ul>
+						</template>
+
 						<div class="ears_footer">
 							Geometry by ears-common {{ vm.commonVersion }} &middot;
 							<a href="#" @click.prevent="openManipulator()">web manipulator</a>
@@ -521,6 +579,11 @@ const PANEL_CSS = `
 	.ears_buttons { gap: 4px; }
 	.ears_buttons button { flex: 1 1 auto; }
 	.ears_empty { padding: 16px; text-align: center; color: var(--color-subtle_text); }
+	.ears_clickable { cursor: pointer; display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+	.ears_hint { font-size: 11px; color: var(--color-subtle_text); margin: 2px 0 6px; }
+	.ears_regions { margin: 4px 0 0; padding: 0 0 0 4px; list-style: none; max-height: 160px; overflow-y: auto; font-size: 12px; }
+	.ears_regions li { padding: 1px 0; color: var(--color-subtle_text); }
+	.ears_regions code { color: var(--color-light); font-variant-numeric: tabular-nums; }
 	.ears_footer { margin-top: 12px; padding-top: 6px; border-top: 1px solid var(--color-border); font-size: 11px; color: var(--color-subtle_text); }
 `;
 
@@ -565,6 +628,8 @@ Plugin.register(PLUGIN_ID, {
 			});
 		}
 		state.preview = new EarsPreview();
+		Fmt.registerFormat();
+		Fmt.patchSkinActions();
 		buildPanel();
 
 		on('select_project', queueRefresh);
@@ -583,6 +648,8 @@ Plugin.register(PLUGIN_ID, {
 
 	onunload() {
 		for (const [event, handler] of Object.entries(listeners)) Blockbench.removeListener(event, handler);
+		Fmt.unpatchSkinActions();
+		Fmt.unregisterFormat();
 		if (state.preview) state.preview.dispose();
 		if (state.panel) state.panel.delete();
 		if (state.css && state.css.delete) state.css.delete();

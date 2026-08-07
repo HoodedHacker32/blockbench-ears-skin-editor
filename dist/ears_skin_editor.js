@@ -1235,6 +1235,483 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     if (texture) texture.remove(true);
   }
 
+  // src/regions.js
+  var TEXTURE_SIZES = {
+    skin: [64, 64],
+    emissive_skin: [64, 64],
+    wing: [20, 16],
+    emissive_wing: [20, 16],
+    cape: [20, 16]
+  };
+  function computeRegions(objects) {
+    const seen = /* @__PURE__ */ new Map();
+    for (const o of objects || []) {
+      if (o.type !== "quad" || !o.uvs) continue;
+      const size = TEXTURE_SIZES[o.texture];
+      if (!size) continue;
+      let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+      for (const [u, v] of o.uvs) {
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+      }
+      const x = Math.round(minU * size[0]);
+      const y = Math.round(minV * size[1]);
+      const w = Math.round((maxU - minU) * size[0]);
+      const h = Math.round((maxV - minV) * size[1]);
+      if (w <= 0 || h <= 0) continue;
+      const key = `${o.texture}:${x},${y},${w},${h}`;
+      if (!seen.has(key)) seen.set(key, { texture: o.texture, x, y, w, h });
+    }
+    return [...seen.values()].sort(
+      (a, b) => a.texture.localeCompare(b.texture) || a.y - b.y || a.x - b.x
+    );
+  }
+  function countEmpty(imageData, region) {
+    let empty = 0;
+    for (let y = region.y; y < region.y + region.h; y++) {
+      for (let x = region.x; x < region.x + region.w; x++) {
+        if (x < 0 || y < 0 || x >= imageData.width || y >= imageData.height) continue;
+        if (imageData.data[(y * imageData.width + x) * 4 + 3] === 0) empty++;
+      }
+    }
+    return empty;
+  }
+  function summarise(regions, imageData) {
+    const skin = regions.filter((r) => r.texture === "skin");
+    let total = 0;
+    let empty = 0;
+    for (const r of skin) {
+      total += r.w * r.h;
+      if (imageData) empty += countEmpty(imageData, r);
+    }
+    return { count: skin.length, total, empty };
+  }
+  function fillEmptyRegions(imageData, regions, { onlyEmpty = true } = {}) {
+    const skin = regions.filter((r) => r.texture === "skin");
+    let painted = 0;
+    skin.forEach((region, index) => {
+      const hue = index * 47 % 360;
+      const [r, g, b] = hslToRgb(hue / 360, 0.6, 0.55);
+      for (let y = region.y; y < region.y + region.h; y++) {
+        for (let x = region.x; x < region.x + region.w; x++) {
+          if (x < 0 || y < 0 || x >= imageData.width || y >= imageData.height) continue;
+          const i = (y * imageData.width + x) * 4;
+          if (onlyEmpty && imageData.data[i + 3] !== 0) continue;
+          const shade = (x + y) % 2 === 0 ? 1 : 0.88;
+          imageData.data[i] = Math.round(r * shade);
+          imageData.data[i + 1] = Math.round(g * shade);
+          imageData.data[i + 2] = Math.round(b * shade);
+          imageData.data[i + 3] = 255;
+          painted++;
+        }
+      }
+    });
+    return painted;
+  }
+  function hslToRgb(h, s, l) {
+    const f = (n) => {
+      const k = (n + h * 12) % 12;
+      const a = s * Math.min(l, 1 - l);
+      return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+    };
+    return [f(0), f(8), f(4)];
+  }
+
+  // src/presets.js
+  var HEAD_AND_BODY = `
+			{
+				"name": "Waist",
+				"color": 0,
+				"pivot": [0, 12, 0],
+				"pose": [0, 0, 0]
+			},
+			{
+				"name": "Head",
+				"parent": "Waist",
+				"color": 1,
+				"pivot": [0, 24, 0],
+				"pose": [-6, 5, 0],
+				"cubes": [
+					{"name": "Head", "origin": [-4, 24, -4], "size": [8, 8, 8], "uv": [0, 0]},
+					{"name": "Hat Layer", "visibility": false, "origin": [-4, 24, -4], "size": [8, 8, 8], "uv": [32, 0], "inflate": 0.5, "layer": true}
+				]
+			},
+			{
+				"name": "Body",
+				"parent": "Waist",
+				"color": 3,
+				"pivot": [0, 24, 0],
+				"cubes": [
+					{"name": "Body", "origin": [-4, 12, -2], "size": [8, 12, 4], "uv": [16, 16]},
+					{"name": "Body Layer", "visibility": false, "origin": [-4, 12, -2], "size": [8, 12, 4], "uv": [16, 32], "inflate": 0.25, "layer": true}
+				]
+			}`;
+  var LEGS = `
+			{
+				"name": "Right Leg",
+				"color": 6,
+				"pivot": [-1.9, 12, 0],
+				"pose": [11, 0, 2],
+				"cubes": [
+					{"name": "Right Leg", "origin": [-3.9, 0, -2], "size": [4, 12, 4], "uv": [0, 16]},
+					{"name": "Right Leg Layer", "visibility": false, "origin": [-3.9, 0, -2], "size": [4, 12, 4], "uv": [0, 32], "inflate": 0.25, "layer": true}
+				]
+			},
+			{
+				"name": "Left Leg",
+				"color": 7,
+				"pivot": [1.9, 12, 0],
+				"pose": [-10, 0, -2],
+				"cubes": [
+					{"name": "Left Leg", "origin": [-0.1, 0, -2], "size": [4, 12, 4], "uv": [16, 48]},
+					{"name": "Left Leg Layer", "visibility": false, "origin": [-0.1, 0, -2], "size": [4, 12, 4], "uv": [0, 48], "inflate": 0.25, "layer": true}
+				]
+			}`;
+  var arms = (width, rightX, leftX) => `
+			{
+				"name": "Right Arm",
+				"parent": "Waist",
+				"color": 5,
+				"pivot": [-5, 22, 0],
+				"pose": [-10, 0, 0],
+				"cubes": [
+					{"name": "Right Arm", "origin": [${rightX}, 12, -2], "size": [${width}, 12, 4], "uv": [40, 16]},
+					{"name": "Right Arm Layer", "visibility": false, "origin": [${rightX}, 12, -2], "size": [${width}, 12, 4], "uv": [40, 32], "inflate": 0.25, "layer": true}
+				]
+			},
+			{
+				"name": "Left Arm",
+				"parent": "Waist",
+				"color": 0,
+				"pivot": [5, 22, 0],
+				"pose": [12, 0, 0],
+				"cubes": [
+					{"name": "Left Arm", "origin": [${leftX}, 12, -2], "size": [${width}, 12, 4], "uv": [32, 48]},
+					{"name": "Left Arm Layer", "visibility": false, "origin": [${leftX}, 12, -2], "size": [${width}, 12, 4], "uv": [48, 48], "inflate": 0.25, "layer": true}
+				]
+			}`;
+  var model = (name, armWidth, rightX, leftX) => `{
+		"name": "${name}",
+		"texturewidth": 64,
+		"textureheight": 64,
+		"eyes": [[9, 11], [13, 11]],
+		"bones": [${HEAD_AND_BODY},${arms(armWidth, rightX, leftX)},${LEGS}
+		]
+	}`;
+  var MODELS = {
+    steve: {
+      id: "steve",
+      display_name: "Player - Wide",
+      slim: false,
+      model: model("steve", 4, -8, 4)
+    },
+    alex: {
+      id: "alex",
+      display_name: "Player - Slim",
+      slim: true,
+      model: model("alex", 3, -7, 4)
+    }
+  };
+  function getModel(id) {
+    return MODELS[id] || MODELS.steve;
+  }
+  var FEATURE_PRESETS = {
+    none: { label: "None (all off)", features: {} },
+    fox: {
+      label: "Fox",
+      features: { earMode: "ABOVE", earAnchor: "CENTER", claws: true, tailMode: "DOWN", tailSegments: 2, tailBend0: 30, tailBend1: -20, snoutWidth: 3, snoutHeight: 2, snoutDepth: 4, snoutOffset: 1 }
+    },
+    cat: {
+      label: "Cat",
+      features: { earMode: "ABOVE", earAnchor: "CENTER", claws: true, tailMode: "UP", tailSegments: 3, tailBend0: -20, tailBend1: -20, tailBend2: -20, snoutWidth: 2, snoutHeight: 1, snoutDepth: 2, snoutOffset: 2 }
+    },
+    bunny: {
+      label: "Bunny",
+      features: { earMode: "TALL", earAnchor: "CENTER", tailMode: "DOWN", tailSegments: 1, snoutWidth: 2, snoutHeight: 2, snoutDepth: 2, snoutOffset: 2 }
+    },
+    wolf: {
+      label: "Wolf",
+      features: { earMode: "CROSS", earAnchor: "CENTER", claws: true, tailMode: "BACK", tailSegments: 2, tailBend0: 15, tailBend1: 15, snoutWidth: 4, snoutHeight: 2, snoutDepth: 5, snoutOffset: 1 }
+    },
+    deer: {
+      label: "Deer",
+      features: { earMode: "OUT", earAnchor: "CENTER", horn: true, tailMode: "UP", tailSegments: 1, snoutWidth: 3, snoutHeight: 2, snoutDepth: 3, snoutOffset: 1 }
+    },
+    floppy: {
+      label: "Floppy-eared",
+      features: { earMode: "FLOPPY", earAnchor: "CENTER", tailMode: "DOWN", tailSegments: 2, tailBend0: 20, tailBend1: 20 }
+    },
+    winged: {
+      label: "Winged",
+      features: { earMode: "ABOVE", earAnchor: "CENTER", wingMode: "SYMMETRIC_DUAL", animateWings: true }
+    }
+  };
+
+  // src/format.js
+  var FORMAT_ID = "ears_skin";
+  var SKIN_ACTIONS = [
+    "toggle_skin_layer",
+    "convert_minecraft_skin_variant",
+    "explode_skin_model",
+    "custom_skin_poses",
+    "add_custom_skin_pose"
+  ];
+  var patched = [];
+  function patchSkinActions() {
+    for (const id of SKIN_ACTIONS) {
+      const item = BarItems[id];
+      const formats = item && item.condition && item.condition.formats;
+      if (!Array.isArray(formats) || formats.includes(FORMAT_ID)) continue;
+      formats.push(FORMAT_ID);
+      patched.push(formats);
+    }
+  }
+  function unpatchSkinActions() {
+    for (const formats of patched) {
+      const i = formats.indexOf(FORMAT_ID);
+      if (i !== -1) formats.splice(i, 1);
+    }
+    patched.length = 0;
+  }
+  var EAR_MODES2 = { NONE: "None", ABOVE: "Above", SIDES: "Sides", OUT: "Out", AROUND: "Around", FLOPPY: "Floppy", CROSS: "Cross", TALL: "Tall", TALL_CROSS: "Tall Cross", BEHIND: "Behind (old)" };
+  var EAR_ANCHORS2 = { CENTER: "Center", FRONT: "Front", BACK: "Back" };
+  var TAIL_MODES2 = { NONE: "None", DOWN: "Down", BACK: "Back", UP: "Up", VERTICAL: "Vertical", CROSS: "Cross", CROSS_OVERLAP: "Overlapping Cross", STAR: "Star", STAR_OVERLAP: "Overlapping Star" };
+  var WING_MODES2 = { NONE: "None", SYMMETRIC_DUAL: "Symmetric Dual", SYMMETRIC_SINGLE: "Symmetric Single", ASYMMETRIC_L: "Asymmetric Single (Left)", ASYMMETRIC_R: "Asymmetric Single (Right)", ASYMMETRIC_DUAL: "Asymmetric Dual", FLAT: "Flat" };
+  var PROTRUSIONS2 = { none: "None", claws: "Claws", horn: "Horn", both: "Claws & Horn" };
+  var dialog = null;
+  var suppressPresetReset = false;
+  function formToFeatures(form) {
+    const f = defaultFeatures();
+    f.enabled = form.ears_enabled;
+    f.earMode = form.ear_mode;
+    f.earAnchor = form.ear_anchor;
+    f.claws = form.protrusions === "claws" || form.protrusions === "both";
+    f.horn = form.protrusions === "horn" || form.protrusions === "both";
+    f.tailMode = form.tail_mode;
+    f.tailSegments = form.tail_segments;
+    f.snoutWidth = form.snout ? form.snout_width : 0;
+    f.snoutHeight = form.snout_height;
+    f.snoutDepth = form.snout_depth;
+    f.snoutOffset = form.snout_offset;
+    f.chestSize = form.chest_size;
+    f.wingMode = form.wing_mode;
+    f.animateWings = form.animate_wings;
+    f.capeEnabled = form.cape;
+    f.emissive = form.emissive;
+    if (f.snoutOffset > 8 - f.snoutHeight) f.snoutOffset = 8 - f.snoutHeight;
+    return f;
+  }
+  function featuresToForm(features) {
+    const protrusions = features.claws && features.horn ? "both" : features.claws ? "claws" : features.horn ? "horn" : "none";
+    return {
+      ear_mode: features.earMode ?? "NONE",
+      ear_anchor: features.earAnchor ?? "CENTER",
+      protrusions,
+      tail_mode: features.tailMode ?? "NONE",
+      tail_segments: features.tailSegments ?? 1,
+      snout: (features.snoutWidth ?? 0) > 0,
+      snout_width: features.snoutWidth || 3,
+      snout_height: features.snoutHeight || 2,
+      snout_depth: features.snoutDepth || 3,
+      snout_offset: features.snoutOffset ?? 1,
+      chest_size: features.chestSize ?? 0,
+      wing_mode: features.wingMode ?? "NONE",
+      animate_wings: features.animateWings ?? true,
+      cape: features.capeEnabled ?? false,
+      emissive: features.emissive ?? false
+    };
+  }
+  function buildDialog() {
+    const presetOptions = {};
+    for (const [id, p] of Object.entries(FEATURE_PRESETS)) presetOptions[id] = p.label;
+    const modelOptions = {};
+    for (const [id, m] of Object.entries(MODELS)) modelOptions[id] = m.display_name;
+    dialog = new Dialog(`${FORMAT_ID}_setup`, {
+      title: "New Ears Skin",
+      width: 620,
+      form: {
+        model: { label: "Player model", type: "select", default: "steve", options: modelOptions },
+        texture_source: {
+          label: "Texture",
+          type: "select",
+          default: "template",
+          options: { template: "UV template", blank: "Blank (transparent)", file: "Import a PNG\u2026" }
+        },
+        texture_file: { label: "Skin file", type: "file", extensions: ["png"], filetype: "PNG", condition: (form) => form.texture_source === "file" },
+        // Blockbench checkboxes read `value`, not `default`.
+        pose: { label: "Start in a natural pose", type: "checkbox", value: true },
+        ears_line: "_",
+        preset: { label: "Starting preset", type: "select", default: "none", options: presetOptions },
+        ears_enabled: { label: "Ears enabled", type: "checkbox", value: true },
+        ear_mode: { label: "Ear mode", type: "select", default: "NONE", options: EAR_MODES2, condition: (form) => form.ears_enabled },
+        ear_anchor: { label: "Ear anchor", type: "select", default: "CENTER", options: EAR_ANCHORS2, condition: (form) => form.ears_enabled && form.ear_mode !== "NONE" && form.ear_mode !== "BEHIND" },
+        protrusions: { label: "Protrusions", type: "select", default: "none", options: PROTRUSIONS2, condition: (form) => form.ears_enabled },
+        tail_mode: { label: "Tail", type: "select", default: "NONE", options: TAIL_MODES2, condition: (form) => form.ears_enabled },
+        tail_segments: { label: "Tail segments", type: "number", default: 1, min: 1, max: 4, step: 1, condition: (form) => form.ears_enabled && form.tail_mode !== "NONE" },
+        snout: { label: "Snout", type: "checkbox", value: false, condition: (form) => form.ears_enabled },
+        snout_width: { label: "Snout width", type: "number", default: 3, min: 1, max: 7, step: 1, condition: (form) => form.ears_enabled && form.snout },
+        snout_height: { label: "Snout height", type: "number", default: 2, min: 1, max: 4, step: 1, condition: (form) => form.ears_enabled && form.snout },
+        snout_depth: { label: "Snout length", type: "number", default: 3, min: 1, max: 8, step: 1, condition: (form) => form.ears_enabled && form.snout },
+        snout_offset: { label: "Snout offset", type: "number", default: 1, min: 0, max: 7, step: 1, condition: (form) => form.ears_enabled && form.snout },
+        chest_size: { label: "Chest size", type: "number", default: 0, min: 0, max: 1, step: 0.05, condition: (form) => form.ears_enabled },
+        wing_mode: { label: "Wings", type: "select", default: "NONE", options: WING_MODES2, condition: (form) => form.ears_enabled },
+        animate_wings: { label: "Animate wings", type: "checkbox", value: true, condition: (form) => form.ears_enabled && form.wing_mode !== "NONE" },
+        cape: { label: "Cape", type: "checkbox", value: false, condition: (form) => form.ears_enabled },
+        emissive: { label: "Emissive palette", type: "checkbox", value: false, condition: (form) => form.ears_enabled },
+        format_line: "_",
+        data_format: {
+          label: "Data format",
+          type: "select",
+          default: "v0",
+          options: { v0: "v0 \u2014 Pixelwise (matches the web tool)", v1: "v1 \u2014 Binary" },
+          condition: (form) => form.ears_enabled
+        },
+        note: {
+          type: "info",
+          text: "Ears reads its shapes from unused regions of the skin, so turning a feature on gives you geometry with nothing drawn on it yet. The Ears panel shows exactly which pixels each feature uses once the project is open."
+        }
+      },
+      onFormChange(form) {
+        if (suppressPresetReset) return;
+        if (this.last_preset !== form.preset) {
+          this.last_preset = form.preset;
+          const preset = FEATURE_PRESETS[form.preset];
+          if (preset) {
+            suppressPresetReset = true;
+            this.setFormValues(featuresToForm({ ...defaultFeatures(), ...preset.features }), false);
+            suppressPresetReset = false;
+          }
+        }
+      },
+      onConfirm(form) {
+        dialog.hide();
+        createProject(form);
+      }
+    });
+    return dialog;
+  }
+  function textureArgument(form) {
+    if (form.texture_source === "file" && form.texture_file) return form.texture_file;
+    if (form.texture_source === "blank") return false;
+    return true;
+  }
+  function createProject(form) {
+    const preset = getModel(form.model);
+    if (!newProject(Formats[FORMAT_ID])) return;
+    Project.name = "ears_skin";
+    Project.skin_model = preset.id;
+    Project.skin_slim = preset.slim;
+    Project.ears_data_format = form.data_format || "v0";
+    Codecs.skin_model.parse(JSON.parse(preset.model), 1, textureArgument(form), form.pose !== false);
+    if (form.texture_source === "blank") {
+      const canvas = document.createElement("canvas");
+      canvas.width = 64;
+      canvas.height = 64;
+      new Texture({ name: "skin" }).fromDataURL(canvas.toDataURL("image/png")).add(false);
+    }
+    const features = form.ears_enabled ? formToFeatures(form) : null;
+    whenTextureReady((texture) => {
+      if (features) applyFeatures(features, Project.ears_data_format, texture);
+      Blockbench.dispatchEvent("ears_project_created", { project: Project });
+    });
+  }
+  function findSkinTexture() {
+    if (!Project || !Project.textures) return null;
+    return Project.textures.find(
+      (t) => !t.ears_role && t.width === 64 && t.height === 64 && t.canvas && t.canvas.width === 64
+    ) || null;
+  }
+  function whenTextureReady(callback, attempts = 80) {
+    const texture = findSkinTexture();
+    if (texture) {
+      callback(texture);
+      return;
+    }
+    if (attempts <= 0) {
+      console.warn("[Ears] timed out waiting for the skin texture to load");
+      return;
+    }
+    setTimeout(() => whenTextureReady(callback, attempts - 1), 25);
+  }
+  function applyFeatures(features, writeFormat = "v0", target = null) {
+    const texture = target || findSkinTexture();
+    if (!texture || !texture.ctx) return false;
+    const imageData = texture.ctx.getImageData(0, 0, 64, 64);
+    if (writeFormat === "v1") writeFeatures(imageData, features);
+    else writeFeaturesV0(imageData, features);
+    texture.ctx.putImageData(imageData, 0, 0);
+    texture.updateChangesAfterEdit();
+    Blockbench.dispatchEvent("edit_texture", { texture });
+    return true;
+  }
+  var format = null;
+  function registerFormat() {
+    buildDialog();
+    format = new ModelFormat({
+      id: FORMAT_ID,
+      name: "Ears Skin",
+      description: "Minecraft skin with live Ears features",
+      icon: "pets",
+      category: "minecraft",
+      target: "Minecraft: Java Edition",
+      show_on_start_screen: true,
+      confidential: false,
+      // Matches the built-in skin format, which is what makes the native skin
+      // editing experience -- box UV, one texture, bone rig, centred grid.
+      box_uv: true,
+      optional_box_uv: false,
+      single_texture: true,
+      bone_rig: true,
+      centered_grid: true,
+      integer_size: true,
+      block_size: 16,
+      forward_direction: "-z",
+      rotate_cubes: false,
+      stretch_cubes: false,
+      meshes: false,
+      locators: false,
+      billboards: false,
+      bounding_boxes: false,
+      texture_meshes: false,
+      uv_rotation: false,
+      java_face_properties: false,
+      cullfaces: false,
+      animated_textures: false,
+      texture_folder: false,
+      can_convert_to: false,
+      model_identifier: false,
+      // Modes: painting and posing, no animation or display settings -- same as
+      // the built-in skin format.
+      edit_mode: false,
+      paint_mode: true,
+      pose_mode: true,
+      display_mode: false,
+      animation_mode: false,
+      format_page: {
+        content: [
+          { type: "h3", text: "Ears Skin" },
+          {
+            text: "A Minecraft player skin with [Ears](https://ears.y2k.diy) features previewed as real 3D geometry. Set the ears, tail, snout, horns, claws and wings up front, then paint and pose the skin with Blockbench's normal tools \u2014 the Ears geometry updates as you go.\n\nThe configuration is stored in the skin's own pixels, so exporting the texture is all you need to do; upload it to Mojang and the Ears mod reads it back."
+          }
+        ]
+      },
+      new() {
+        dialog.show();
+        dialog.last_preset = void 0;
+        return true;
+      }
+    });
+    return format;
+  }
+  function unregisterFormat() {
+    if (dialog) dialog.delete();
+    if (format) format.delete();
+    dialog = null;
+    format = null;
+  }
+
   // src/renderer.js
   var PART_ALIASES = {
     head: ["head"],
@@ -1441,6 +1918,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
 
   // src/index.js
   var PLUGIN_ID = "ears_skin_editor";
+  var FORMATS = ["skin", FORMAT_ID];
   var state2 = {
     preview: null,
     panel: null,
@@ -1465,10 +1943,13 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     editingWing: false,
     editingCape: false,
     commonVersion: "",
-    notices: []
+    notices: [],
+    regions: [],
+    regionSummary: { count: 0, total: 0, empty: 0 },
+    showRegions: false
   };
   function isSkinProject() {
-    return !!(Project && Format && Format.id === "skin");
+    return !!(Project && Format && FORMATS.includes(Format.id));
   }
   function detectSlim() {
     for (const group of Group.all) {
@@ -1525,6 +2006,9 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     state2.preview.setTexture("emissive_skin", state2.skinCanvas);
     state2.preview.build(objects);
     vm.missingParts = Array.from(state2.preview.missingParts);
+    state2.regions = computeRegions(objects);
+    vm.regions = state2.regions.filter((r) => r.texture === "skin");
+    vm.regionSummary = summarise(state2.regions, imageData);
     updateNotices();
     syncAuxTextures();
     Canvas.updateView({ elements: [], selection: false });
@@ -1566,6 +2050,24 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     state2.suspend = false;
     if (ok) refresh();
   }
+  function fillRegions(onlyEmpty) {
+    const texture = getSkinTexture();
+    if (!texture || !state2.regions.length) return;
+    let painted = 0;
+    state2.suspend = true;
+    const ok = editTexture(
+      texture,
+      (imageData) => {
+        painted = fillEmptyRegions(imageData, state2.regions, { onlyEmpty });
+      },
+      onlyEmpty ? "Fill empty Ears regions" : "Fill Ears regions"
+    );
+    state2.suspend = false;
+    if (ok) {
+      Blockbench.showQuickMessage(`Painted ${painted} pixel${painted === 1 ? "" : "s"}`, 2e3);
+      refresh();
+    }
+  }
   function updateNotices() {
     const notices = [];
     const f = vm.features;
@@ -1582,6 +2084,9 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     }
     if (vm.missingParts.length) {
       notices.push(`This project has no bone for: ${vm.missingParts.join(", ")}. Those features can't be previewed.`);
+    }
+    if (vm.features.enabled && vm.regionSummary.empty > 0 && vm.regionSummary.empty === vm.regionSummary.total) {
+      notices.push('None of the texture regions these features read from have been drawn yet, so nothing will show in game. Use "Fill empty regions" below to see where to paint.');
     }
     vm.notices = notices;
   }
@@ -1716,7 +2221,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       id: PLUGIN_ID,
       icon: "pets",
       growable: true,
-      condition: { formats: ["skin"] },
+      condition: { formats: FORMATS },
       default_position: { slot: "right_bar", float_position: [0, 0], float_size: [340, 700], height: 560 },
       component: {
         name: "ears-panel",
@@ -1728,6 +2233,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
           exportAux: (key) => exportAux(key),
           editAux: (key) => editAuxInProject(key),
           stopEditingAux: (key) => stopEditingAux(key),
+          fillRegions: (onlyEmpty) => fillRegions(onlyEmpty),
           openManipulator: () => Blockbench.openLink("https://ears.y2k.diy/manipulator/"),
           toggleEnabled() {
             vm.features.enabled = !vm.features.enabled;
@@ -1888,6 +2394,26 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
 							</div>
 						</fieldset>
 
+						<template v-if="vm.features.enabled && vm.regions.length">
+							<h4 @click="vm.showRegions = !vm.showRegions" class="ears_clickable">
+								Texture regions
+								<span class="ears_badge">{{ vm.regionSummary.empty }} / {{ vm.regionSummary.total }} px undrawn</span>
+							</h4>
+							<div class="ears_hint">
+								These are the pixels your current features read from \u2014 derived from the
+								geometry, so it's exactly what Ears will sample.
+							</div>
+							<div class="ears_row ears_buttons">
+								<button @click="fillRegions(true)" title="Paint a placeholder into regions that are still fully transparent">Fill empty regions</button>
+								<button @click="vm.showRegions = !vm.showRegions">{{ vm.showRegions ? 'Hide list' : 'Show list' }}</button>
+							</div>
+							<ul v-if="vm.showRegions" class="ears_regions">
+								<li v-for="r in vm.regions">
+									<code>{{ r.x }}, {{ r.y }}</code> &mdash; {{ r.w }}&times;{{ r.h }}
+								</li>
+							</ul>
+						</template>
+
 						<div class="ears_footer">
 							Geometry by ears-common {{ vm.commonVersion }} &middot;
 							<a href="#" @click.prevent="openManipulator()">web manipulator</a>
@@ -1914,6 +2440,11 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
 	.ears_buttons { gap: 4px; }
 	.ears_buttons button { flex: 1 1 auto; }
 	.ears_empty { padding: 16px; text-align: center; color: var(--color-subtle_text); }
+	.ears_clickable { cursor: pointer; display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+	.ears_hint { font-size: 11px; color: var(--color-subtle_text); margin: 2px 0 6px; }
+	.ears_regions { margin: 4px 0 0; padding: 0 0 0 4px; list-style: none; max-height: 160px; overflow-y: auto; font-size: 12px; }
+	.ears_regions li { padding: 1px 0; color: var(--color-subtle_text); }
+	.ears_regions code { color: var(--color-light); font-variant-numeric: tabular-nums; }
 	.ears_footer { margin-top: 12px; padding-top: 6px; border-top: 1px solid var(--color-border); font-size: 11px; color: var(--color-subtle_text); }
 `;
   var listeners = {};
@@ -1948,6 +2479,8 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
         });
       }
       state2.preview = new EarsPreview();
+      registerFormat();
+      patchSkinActions();
       buildPanel();
       on("select_project", queueRefresh);
       on("load_project", queueRefresh);
@@ -1963,6 +2496,8 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     },
     onunload() {
       for (const [event, handler] of Object.entries(listeners)) Blockbench.removeListener(event, handler);
+      unpatchSkinActions();
+      unregisterFormat();
       if (state2.preview) state2.preview.dispose();
       if (state2.panel) state2.panel.delete();
       if (state2.css && state2.css.delete) state2.css.delete();
