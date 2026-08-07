@@ -18,6 +18,7 @@
 import * as Codec from './codec.js';
 import * as CodecV0 from './codec-v0.js';
 import { getModel, MODELS, FEATURE_PRESETS } from './presets.js';
+import { bindCubesToSkin } from './skin.js';
 
 export const FORMAT_ID = 'ears_skin';
 
@@ -224,6 +225,7 @@ function createProject(form) {
 	// when the image finishes loading. Wait for it.
 	const features = form.ears_enabled ? formToFeatures(form) : null;
 	whenTextureReady((texture) => {
+		bindCubesToSkin(texture);
 		if (features) applyFeatures(features, Project.ears_data_format, texture);
 		Blockbench.dispatchEvent('ears_project_created', { project: Project });
 	});
@@ -299,7 +301,11 @@ export function registerFormat() {
 		// editing experience -- box UV, one texture, bone rig, centred grid.
 		box_uv: true,
 		optional_box_uv: false,
-		single_texture: true,
+		// Not single_texture: the wing and cape are genuinely separate images
+		// (whole PNGs smuggled in the skin's alpha channel), and they need their
+		// own UV space so their geometry can be painted too.
+		single_texture: false,
+		per_texture_uv_size: true,
 		bone_rig: true,
 		centered_grid: true,
 		integer_size: true,

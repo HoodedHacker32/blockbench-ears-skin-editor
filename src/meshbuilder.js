@@ -48,7 +48,29 @@ export function clearGenerated() {
  * Snapshot of what a build produced, so we can tell whether a rebuild is needed
  * and report what happened.
  */
-export function buildMeshes(objects, skinTexture) {
+/** Which Blockbench texture backs each of ears-common's TexSource names. */
+const TEXTURE_GROUP = {
+	skin: 'skin',
+	emissive_skin: 'skin',
+	wing: 'wing',
+	emissive_wing: 'wing',
+	cape: 'cape',
+};
+
+const GROUP_LABELS = { skin: '', wing: 'Wing', cape: 'Cape' };
+
+/** Can this quad become a real face, i.e. is there a project texture behind it? */
+export function isMeshable(o, textureFor) {
+	if (o.type !== 'quad') return false;
+	const group = TEXTURE_GROUP[o.texture];
+	return !!(group && textureFor(group));
+}
+
+/**
+ * @param objects    ears-common's quad list
+ * @param textureFor (groupName) => Blockbench Texture | null
+ */
+export function buildMeshes(objects, textureFor) {
 	// A rebuild destroys and recreates the elements, which would silently drop
 	// the user's selection. Remember it by name and put it back.
 	const selectedNames = new Set(
@@ -58,19 +80,21 @@ export function buildMeshes(objects, skinTexture) {
 	);
 
 	clearGenerated();
-	if (!objects || !objects.length || !skinTexture) return { meshes: 0, faces: 0, skipped: 0 };
+	if (!objects || !objects.length) return { meshes: 0, faces: 0, skipped: 0 };
 
 	const mirrored = isMirroredOnX();
 	const parts = new Map();
-	const byPart = new Map();
+	const buckets = new Map();
 	let skipped = 0;
 
 	for (const o of objects) {
 		if (o.type !== 'quad') continue;
-		// Only quads sampling the skin can become faces: mesh UVs are in project
-		// resolution, so a 20x16 wing texture wouldn't map. Those keep using the
-		// read-only overlay.
-		if (o.texture !== 'skin' && o.texture !== 'emissive_skin') {
+
+		const group = TEXTURE_GROUP[o.texture];
+		const texture = group ? textureFor(group) : null;
+		if (!texture) {
+			// No backing texture in the project (e.g. wings enabled but no wing
+			// image stored) -- nothing to map UVs against.
 			skipped++;
 			continue;
 		}
@@ -83,25 +107,30 @@ export function buildMeshes(objects, skinTexture) {
 		}
 
 		const anchor = (o.moves || []).find((m) => m.type === 'anchor');
-		const key = anchor ? anchor.part : 'head';
-		if (!byPart.has(key)) byPart.set(key, { part: anchored, quads: [] });
-		byPart.get(key).quads.push({ o, matrix });
+		const partKey = anchor ? anchor.part : 'head';
+		// Split by texture as well as bone, so the wing gets its own selectable
+		// element rather than being merged into the body's.
+		const key = `${partKey}|${group}`;
+		if (!buckets.has(key)) buckets.set(key, { part: anchored, partKey, group, texture, quads: [] });
+		buckets.get(key).quads.push({ o, matrix });
 	}
 
 	let meshCount = 0;
 	let faceCount = 0;
 
-	for (const [partKey, { part, quads }] of byPart) {
+	for (const { part, partKey, group, texture, quads } of buckets.values()) {
+		// `??`, not `||`: the skin group's label is deliberately empty so the mesh
+		// is named after its bone instead.
+		const label = GROUP_LABELS[group] ?? group;
 		const mesh = new Mesh({
-			name: `Ears ${PART_LABELS[partKey] || partKey}`,
+			name: `Ears ${label || PART_LABELS[partKey] || partKey}`.trim(),
 			origin: part.group.origin.slice(),
 			vertices: {},
 		});
 		mesh[GENERATED_KEY] = true;
 
 		for (const { o, matrix } of quads) {
-			const face = buildFace(mesh, o, matrix, skinTexture);
-			if (face) faceCount++;
+			if (buildFace(mesh, o, matrix, texture)) faceCount++;
 		}
 
 		mesh.addTo(part.group);
@@ -113,7 +142,7 @@ export function buildMeshes(objects, skinTexture) {
 	return { meshes: meshCount, faces: faceCount, skipped };
 }
 
-function buildFace(mesh, o, matrix, skinTexture) {
+function buildFace(mesh, o, matrix, texture) {
 	const w = o.width;
 	const h = o.height;
 	// Push the sheet a hair towards whichever side this quad faces, so a
@@ -138,9 +167,12 @@ function buildFace(mesh, o, matrix, skinTexture) {
 
 	const keys = mesh.addVertices(...positions);
 
+	// ears-common normalises UVs against whichever texture it bound, so scale them
+	// back up by that texture's own UV size. For the wing and cape that's 20x16,
+	// not the project's 64x64 -- which is what Format.per_texture_uv_size buys us.
 	const uv = {};
-	const tw = Project.texture_width || 64;
-	const th = Project.texture_height || 64;
+	const tw = texture.getUVWidth ? texture.getUVWidth() : Project.texture_width || 64;
+	const th = texture.getUVHeight ? texture.getUVHeight() : Project.texture_height || 64;
 	keys.forEach((key, i) => {
 		const source = o.uvs[uvOrder[i]];
 		uv[key] = [source[0] * tw, source[1] * th];
@@ -149,7 +181,7 @@ function buildFace(mesh, o, matrix, skinTexture) {
 	const face = new MeshFace(mesh, {
 		vertices: keys,
 		uv,
-		texture: skinTexture ? skinTexture.uuid : false,
+		texture: texture ? texture.uuid : false,
 	});
 	mesh.addFaces(face);
 	return face;

@@ -140,10 +140,42 @@ export async function upsertAuxTexture(role, canvas, displayName) {
 	} else {
 		texture.fromDataURL(dataUrl);
 	}
+	// The wing/cape are their own little images, not part of the 64x64 atlas, so
+	// their UV space has to match their own resolution. Requires
+	// Format.per_texture_uv_size.
+	texture.uv_width = canvas.width;
+	texture.uv_height = canvas.height;
 	return texture;
 }
 
 export function removeAuxTexture(role) {
 	const texture = getAuxTexture(role);
 	if (texture) texture.remove(true);
+}
+
+/**
+ * Point every cube face at the skin texture.
+ *
+ * The format can't be single_texture -- the wing and cape need their own UV
+ * space -- and without that, Blockbench only falls back to "the one texture" while
+ * there genuinely is only one. The moment a wing texture appears the body's faces
+ * become ambiguous and render untextured, so they have to be bound explicitly.
+ *
+ * Cheap and idempotent, so it runs on every refresh and self-heals.
+ */
+export function bindCubesToSkin(texture) {
+	if (!texture || typeof Cube === 'undefined') return 0;
+	let changed = 0;
+	for (const cube of Cube.all) {
+		if (!cube.faces) continue;
+		for (const key in cube.faces) {
+			const face = cube.faces[key];
+			if (face && face.texture !== texture.uuid) {
+				face.texture = texture.uuid;
+				changed++;
+			}
+		}
+	}
+	if (changed && typeof Canvas !== 'undefined' && Canvas.updateAllFaces) Canvas.updateAllFaces();
+	return changed;
 }

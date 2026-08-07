@@ -131,6 +131,10 @@ function refresh() {
 	const useMeshes = !!(Format && Format.meshes);
 	vm.paintable = useMeshes;
 
+	// Keep the body bound to the skin texture -- adding the wing/cape textures
+	// would otherwise leave the cubes untextured.
+	if (!Format.single_texture) Skin.bindCubesToSkin(texture);
+
 	// Geometry only depends on the Ears configuration, not on the pixels. Painting
 	// changes the texture, which the meshes already reference -- so rebuilding on
 	// every brush stroke would be wasted work that also throws away any manual
@@ -151,13 +155,14 @@ function refresh() {
 	state.fingerprint = fingerprint;
 
 	if (useMeshes) {
-		// Wing and cape quads sample 20x16 textures, which don't map onto the
-		// project's 64x64 UV space, so those keep using the overlay.
-		state.preview.build(objects, (o) => o.texture !== 'skin' && o.texture !== 'emissive_skin');
-		if (geometryChanged) {
-			const result = MeshBuilder.buildMeshes(objects, texture);
-			vm.meshStats = result;
-		}
+		// Everything that has a backing project texture becomes real geometry;
+		// the overlay only covers whatever's left over.
+		const textureFor = (group) => {
+			if (group === 'skin') return texture;
+			return Skin.getAuxTexture(group === 'wing' ? Skin.WING_TEXTURE_NAME : Skin.CAPE_TEXTURE_NAME);
+		};
+		state.preview.build(objects, (o) => !MeshBuilder.isMeshable(o, textureFor));
+		if (geometryChanged) vm.meshStats = MeshBuilder.buildMeshes(objects, textureFor);
 	} else {
 		state.preview.build(objects);
 		vm.meshStats = null;
@@ -293,6 +298,7 @@ const AUX_ROLES = {
  * opted into editing one as a project texture, refresh that too.
  */
 async function syncAuxTextures() {
+	let added = false;
 	for (const [key, { role, label }] of Object.entries(AUX_ROLES)) {
 		const bytes = state.alfalfa.data[key];
 		if (!bytes) {
@@ -308,9 +314,14 @@ async function syncAuxTextures() {
 			state.preview.setTexture(key, canvas);
 			state.preview.setTexture(`emissive_${key}`, canvas);
 
-			// Only refresh an editable copy that already exists -- adding one is
-			// opt-in, so we never surprise a skin project with extra textures.
-			if (Skin.getAuxTexture(role)) await Skin.upsertAuxTexture(role, canvas, label);
+			// In a mesh-capable project the wing/cape need to exist as project
+			// textures for their geometry to have anything to map UVs against, so
+			// add them automatically. In a plain skin project it stays opt-in.
+			const existed = !!Skin.getAuxTexture(role);
+			if (existed || (Format && Format.meshes)) {
+				await Skin.upsertAuxTexture(role, canvas, label);
+				if (!existed) added = true;
+			}
 		} catch (e) {
 			console.error(`[Ears] could not decode the ${key} image`, e);
 		}
@@ -318,6 +329,14 @@ async function syncAuxTextures() {
 	vm.editingWing = !!Skin.getAuxTexture(AUX_ROLES.wing.role);
 	vm.editingCape = !!Skin.getAuxTexture(AUX_ROLES.cape.role);
 	Canvas.updateView({ elements: [], selection: false });
+
+	// Decoding a PNG is async, so the textures only land after the geometry pass
+	// has already run. If that pass had nothing to map the wing against, redo it
+	// now that it does. Guarded by `added` so this can't loop.
+	if (added) {
+		state.fingerprint = null;
+		queueRefresh();
+	}
 }
 
 /** Add the wing/cape to the project as a paintable texture. */

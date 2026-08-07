@@ -1228,11 +1228,29 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     } else {
       texture.fromDataURL(dataUrl);
     }
+    texture.uv_width = canvas.width;
+    texture.uv_height = canvas.height;
     return texture;
   }
   function removeAuxTexture(role) {
     const texture = getAuxTexture(role);
     if (texture) texture.remove(true);
+  }
+  function bindCubesToSkin(texture) {
+    if (!texture || typeof Cube === "undefined") return 0;
+    let changed = 0;
+    for (const cube of Cube.all) {
+      if (!cube.faces) continue;
+      for (const key in cube.faces) {
+        const face = cube.faces[key];
+        if (face && face.texture !== texture.uuid) {
+          face.texture = texture.uuid;
+          changed++;
+        }
+      }
+    }
+    if (changed && typeof Canvas !== "undefined" && Canvas.updateAllFaces) Canvas.updateAllFaces();
+    return changed;
   }
 
   // src/regions.js
@@ -1613,6 +1631,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     }
     const features = form.ears_enabled ? formToFeatures(form) : null;
     whenTextureReady((texture) => {
+      bindCubesToSkin(texture);
       if (features) applyFeatures(features, Project.ears_data_format, texture);
       Blockbench.dispatchEvent("ears_project_created", { project: Project });
     });
@@ -1670,7 +1689,11 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       // editing experience -- box UV, one texture, bone rig, centred grid.
       box_uv: true,
       optional_box_uv: false,
-      single_texture: true,
+      // Not single_texture: the wing and cape are genuinely separate images
+      // (whole PNGs smuggled in the skin's alpha channel), and they need their
+      // own UV space so their geometry can be painted too.
+      single_texture: false,
+      per_texture_uv_size: true,
       bone_rig: true,
       centered_grid: true,
       integer_size: true,
@@ -1952,19 +1975,34 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     for (const mesh of existing) mesh.remove();
     return existing.length;
   }
-  function buildMeshes(objects, skinTexture) {
+  var TEXTURE_GROUP = {
+    skin: "skin",
+    emissive_skin: "skin",
+    wing: "wing",
+    emissive_wing: "wing",
+    cape: "cape"
+  };
+  var GROUP_LABELS = { skin: "", wing: "Wing", cape: "Cape" };
+  function isMeshable(o, textureFor) {
+    if (o.type !== "quad") return false;
+    const group = TEXTURE_GROUP[o.texture];
+    return !!(group && textureFor(group));
+  }
+  function buildMeshes(objects, textureFor) {
     const selectedNames = new Set(
       (typeof Outliner !== "undefined" && Outliner.selected ? Outliner.selected : []).filter((e) => e[GENERATED_KEY]).map((e) => e.name)
     );
     clearGenerated();
-    if (!objects || !objects.length || !skinTexture) return { meshes: 0, faces: 0, skipped: 0 };
+    if (!objects || !objects.length) return { meshes: 0, faces: 0, skipped: 0 };
     const mirrored = isMirroredOnX();
     const parts = /* @__PURE__ */ new Map();
-    const byPart = /* @__PURE__ */ new Map();
+    const buckets = /* @__PURE__ */ new Map();
     let skipped = 0;
     for (const o of objects) {
       if (o.type !== "quad") continue;
-      if (o.texture !== "skin" && o.texture !== "emissive_skin") {
+      const group = TEXTURE_GROUP[o.texture];
+      const texture = group ? textureFor(group) : null;
+      if (!texture) {
         skipped++;
         continue;
       }
@@ -1975,22 +2013,23 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
         continue;
       }
       const anchor = (o.moves || []).find((m) => m.type === "anchor");
-      const key = anchor ? anchor.part : "head";
-      if (!byPart.has(key)) byPart.set(key, { part: anchored, quads: [] });
-      byPart.get(key).quads.push({ o, matrix });
+      const partKey = anchor ? anchor.part : "head";
+      const key = `${partKey}|${group}`;
+      if (!buckets.has(key)) buckets.set(key, { part: anchored, partKey, group, texture, quads: [] });
+      buckets.get(key).quads.push({ o, matrix });
     }
     let meshCount = 0;
     let faceCount = 0;
-    for (const [partKey, { part, quads }] of byPart) {
+    for (const { part, partKey, group, texture, quads } of buckets.values()) {
+      const label = GROUP_LABELS[group] ?? group;
       const mesh = new Mesh({
-        name: `Ears ${PART_LABELS[partKey] || partKey}`,
+        name: `Ears ${label || PART_LABELS[partKey] || partKey}`.trim(),
         origin: part.group.origin.slice(),
         vertices: {}
       });
       mesh[GENERATED_KEY] = true;
       for (const { o, matrix } of quads) {
-        const face = buildFace(mesh, o, matrix, skinTexture);
-        if (face) faceCount++;
+        if (buildFace(mesh, o, matrix, texture)) faceCount++;
       }
       mesh.addTo(part.group);
       mesh.init();
@@ -1999,7 +2038,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     }
     return { meshes: meshCount, faces: faceCount, skipped };
   }
-  function buildFace(mesh, o, matrix, skinTexture) {
+  function buildFace(mesh, o, matrix, texture) {
     const w = o.width;
     const h = o.height;
     const z = o.back ? SHEET : -SHEET;
@@ -2016,8 +2055,8 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     });
     const keys = mesh.addVertices(...positions);
     const uv = {};
-    const tw = Project.texture_width || 64;
-    const th = Project.texture_height || 64;
+    const tw = texture.getUVWidth ? texture.getUVWidth() : Project.texture_width || 64;
+    const th = texture.getUVHeight ? texture.getUVHeight() : Project.texture_height || 64;
     keys.forEach((key, i) => {
       const source = o.uvs[uvOrder[i]];
       uv[key] = [source[0] * tw, source[1] * th];
@@ -2025,7 +2064,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     const face = new MeshFace(mesh, {
       vertices: keys,
       uv,
-      texture: skinTexture ? skinTexture.uuid : false
+      texture: texture ? texture.uuid : false
     });
     mesh.addFaces(face);
     return face;
@@ -2123,6 +2162,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     state2.preview.setTexture("emissive_skin", state2.skinCanvas);
     const useMeshes = !!(Format && Format.meshes);
     vm.paintable = useMeshes;
+    if (!Format.single_texture) bindCubesToSkin(texture);
     const fingerprint = JSON.stringify([
       Project.uuid,
       vm.features,
@@ -2135,11 +2175,12 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     const geometryChanged = fingerprint !== state2.fingerprint;
     state2.fingerprint = fingerprint;
     if (useMeshes) {
-      state2.preview.build(objects, (o) => o.texture !== "skin" && o.texture !== "emissive_skin");
-      if (geometryChanged) {
-        const result = buildMeshes(objects, texture);
-        vm.meshStats = result;
-      }
+      const textureFor = (group) => {
+        if (group === "skin") return texture;
+        return getAuxTexture(group === "wing" ? WING_TEXTURE_NAME : CAPE_TEXTURE_NAME);
+      };
+      state2.preview.build(objects, (o) => !isMeshable(o, textureFor));
+      if (geometryChanged) vm.meshStats = buildMeshes(objects, textureFor);
     } else {
       state2.preview.build(objects);
       vm.meshStats = null;
@@ -2245,6 +2286,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     cape: { role: CAPE_TEXTURE_NAME, label: "Ears Cape" }
   };
   async function syncAuxTextures() {
+    let added = false;
     for (const [key, { role, label }] of Object.entries(AUX_ROLES)) {
       const bytes = state2.alfalfa.data[key];
       if (!bytes) {
@@ -2259,7 +2301,11 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
         else state2.capeCanvas = canvas;
         state2.preview.setTexture(key, canvas);
         state2.preview.setTexture(`emissive_${key}`, canvas);
-        if (getAuxTexture(role)) await upsertAuxTexture(role, canvas, label);
+        const existed = !!getAuxTexture(role);
+        if (existed || Format && Format.meshes) {
+          await upsertAuxTexture(role, canvas, label);
+          if (!existed) added = true;
+        }
       } catch (e) {
         console.error(`[Ears] could not decode the ${key} image`, e);
       }
@@ -2267,6 +2313,10 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     vm.editingWing = !!getAuxTexture(AUX_ROLES.wing.role);
     vm.editingCape = !!getAuxTexture(AUX_ROLES.cape.role);
     Canvas.updateView({ elements: [], selection: false });
+    if (added) {
+      state2.fingerprint = null;
+      queueRefresh();
+    }
   }
   async function editAuxInProject(key) {
     const bytes = state2.alfalfa.data[key];

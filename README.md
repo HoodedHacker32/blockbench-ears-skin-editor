@@ -78,9 +78,10 @@ anything to show up in game. There is no config file.
 - **The Ears meshes are yours to break.** They're ordinary elements, so moving or deleting them is
   allowed and survives painting. They're only regenerated when you change an Ears *setting* — or when
   you press **Rebuild Ears geometry**, which is the way back after you've taken one apart.
-- **Wings and capes stay a read-only preview.** They sample a 20x16 texture, and mesh face UVs are in
-  the project's 64x64 space, so they can't be mapped onto project geometry. Paint them via
-  "Paint wing in Blockbench" instead, which adds the wing as its own texture.
+- **Wings and capes are paintable too.** They aren't in the skin's atlas at all — they're whole PNG
+  files hidden in its alpha channel — so they get their own texture and their own UV space, and the
+  plugin adds them to the project automatically when a skin contains one. Paint the wing in 3D and it
+  is re-encoded back into the skin's alpha channel for you.
 - **Plain Minecraft Skin projects get the preview, not the meshes**, because that format doesn't allow
   mesh elements. To paint Ears geometry on an existing skin, make an Ears Skin project and choose
   "Import a PNG…" for the texture.
@@ -145,11 +146,31 @@ vanilla atlas. The "Above" ears read `(24,0)-(40,8)`, and on an 8x8x8 head at `(
 `v 0-8` are top `(8-16)` and bottom `(16-24)` — so `u 24-32` is unused, and `u 32-40` is the matching
 unused strip in the hat block. No cube face covers those pixels.
 
-Two details that bite:
+Details that bite:
 
 - Mesh face UVs are in texture pixels, not normalised.
 - Blockbench renders meshes `DoubleSide`, but Ears emits coincident front/back quad pairs that rely on
   backface culling. Left alone they z-fight, so the pair is straddled by ±0.01 into a paper-thin sheet.
+- Wings and capes live in their own 20×16 image, not the 64×64 atlas, so the format sets
+  `per_texture_uv_size: true` and gives each texture its own `uv_width`/`uv_height`.
+- That in turn rules out `single_texture`, and **without it Blockbench only auto-binds "the one
+  texture" while there genuinely is only one**. The moment a wing texture appears the body's cube faces
+  go ambiguous and render untextured, so every cube face is bound to the skin texture explicitly on
+  each refresh.
+
+## How the wing gets inside the skin
+
+Ears stores wing and cape images with a trick called Alfalfa. Vanilla's skin loader force-opaques
+certain rectangles of the skin, which makes the alpha bits in those areas dead weight — so Ears uses
+**7 bits of each pixel's alpha** (`a = (0x7F - v) | 0x80` writing, `v = 0x7F - (a & 0x7F)` reading,
+the high bit keeping the pixel opaque). Chained together that's a ~1428 byte side channel.
+
+Into it goes a small container: magic `0xEA1FA1FA`, a version byte, then length-prefixed key/value
+entries. The value for `wing` is **the raw PNG file**, header and IDAT and all. So an Ears skin is an
+ordinary PNG with a second PNG hidden inside its alpha channel.
+
+The plugin decodes that into a real project texture, builds the wing geometry against it, and
+re-encodes on every edit — so painting the wing in 3D updates the skin file itself.
 
 ## How the preview is positioned
 
