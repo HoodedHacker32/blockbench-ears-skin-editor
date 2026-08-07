@@ -1,0 +1,15 @@
+{
+  "name": "ears-skin-editor",
+  "version": "1.0.0",
+  "description": "Blockbench plugin for editing Ears skins with a live 3D preview of the Ears geometry.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "install-local": "node build.mjs --install"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}

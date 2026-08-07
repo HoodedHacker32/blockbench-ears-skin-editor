@@ -1,0 +1,195 @@
+<!doctype html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<title>Ears Skin Editor -- test harness</title>
+	<style>
+		body { font: 13px/1.5 ui-monospace, Consolas, monospace; background: #16161a; color: #ddd; padding: 16px; }
+		.pass { color: #6ec46e; } .fail { color: #ff6b6b; } .info { color: #8ab4f8; }
+		pre { margin: 2px 0; white-space: pre-wrap; }
+		h2 { color: #fff; font-size: 14px; margin: 16px 0 4px; border-bottom: 1px solid #333; }
+	</style>
+</head>
+<body>
+<h1 style="font-size:16px">Ears Skin Editor test harness</h1>
+<div id="out"></div>
+
+<!-- classic script: `var initCommon` lands on the global object, which is where
+     bridge.js expects to find it -->
+<script src="../vendor/ears-common.js"></script>
+
+<script type="module">
+import * as Codec from '../src/codec.js';
+import * as V0 from '../src/codec-v0.js';
+import * as Bridge from '../src/bridge.js';
+
+const out = document.getElementById('out');
+let passed = 0, failed = 0;
+
+const log = (msg, cls = '') => {
+	const pre = document.createElement('pre');
+	pre.className = cls;
+	pre.textContent = msg;
+	out.appendChild(pre);
+};
+const section = (name) => { const h = document.createElement('h2'); h.textContent = name; out.appendChild(h); };
+const check = (name, cond, detail = '') => {
+	if (cond) { passed++; log(`  PASS  ${name}`, 'pass'); }
+	else { failed++; log(`  FAIL  ${name}${detail ? '  --  ' + detail : ''}`, 'fail'); }
+};
+const eq = (name, actual, expected) =>
+	check(name, JSON.stringify(actual) === JSON.stringify(expected), `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+
+function blankSkin() {
+	const canvas = document.createElement('canvas');
+	canvas.width = 64; canvas.height = 64;
+	const ctx = canvas.getContext('2d', { willReadFrequently: true });
+	// Opaque body pixels so Ears has something to render against.
+	ctx.fillStyle = '#a06840';
+	ctx.fillRect(0, 0, 64, 64);
+	return ctx.getImageData(0, 0, 64, 64);
+}
+
+const SAMPLE = {
+	enabled: true,
+	earMode: 'AROUND', earAnchor: 'BACK',
+	claws: true, horn: true,
+	tailMode: 'STAR', tailSegments: 3,
+	tailBend0: 45, tailBend1: -30, tailBend2: 15, tailBend3: 0,
+	snoutWidth: 5, snoutHeight: 3, snoutDepth: 6, snoutOffset: 2,
+	chestSize: 0.5,
+	wingMode: 'ASYMMETRIC_DUAL', animateWings: false,
+	capeEnabled: true, emissive: true,
+};
+
+// --- v1 round trip --------------------------------------------------------
+section('v1 (Binary) codec');
+{
+	const img = blankSkin();
+	Codec.writeFeatures(img, SAMPLE);
+	eq('detects v1 magic', Codec.detectFormat(img), 'v1');
+
+	const back = Codec.readFeatures(img);
+	check('parses back', !!back);
+	if (back) {
+		for (const key of ['earMode', 'earAnchor', 'claws', 'horn', 'tailMode', 'tailSegments',
+			'snoutWidth', 'snoutHeight', 'snoutDepth', 'snoutOffset', 'wingMode', 'animateWings',
+			'capeEnabled', 'emissive']) {
+			eq(`v1 ${key}`, back[key], SAMPLE[key]);
+		}
+		// Quantised fields: 6-bit sign-and-magnitude over +/-90 deg, 5-bit unit.
+		check('v1 tailBend0 within 2deg', Math.abs(back.tailBend0 - 45) < 2, `${back.tailBend0}`);
+		check('v1 tailBend1 within 2deg', Math.abs(back.tailBend1 - -30) < 2, `${back.tailBend1}`);
+		check('v1 tailBend2 within 2deg', Math.abs(back.tailBend2 - 15) < 2, `${back.tailBend2}`);
+		check('v1 chestSize within 0.05', Math.abs(back.chestSize - 0.5) < 0.05, `${back.chestSize}`);
+	}
+	const payload = Codec.encodeFeatures(SAMPLE);
+	check(`v1 payload fits in 45 bytes (${payload.length})`, payload.length <= 45);
+}
+
+// --- v0 round trip --------------------------------------------------------
+section('v0 (Pixelwise) codec');
+{
+	const img = blankSkin();
+	V0.writeFeaturesV0(img, SAMPLE);
+	eq('detects v0 magic', Codec.detectFormat(img), 'v0');
+
+	const back = V0.readFeaturesV0(img);
+	for (const key of ['earMode', 'earAnchor', 'claws', 'horn', 'tailMode', 'tailSegments',
+		'snoutWidth', 'snoutHeight', 'snoutDepth', 'snoutOffset', 'wingMode', 'animateWings',
+		'capeEnabled', 'emissive']) {
+		eq(`v0 ${key}`, back[key], SAMPLE[key]);
+	}
+	check('v0 tailBend0 within 2deg', Math.abs(back.tailBend0 - 45) < 2, `${back.tailBend0}`);
+	check('v0 tailBend1 within 2deg', Math.abs(back.tailBend1 - -30) < 2, `${back.tailBend1}`);
+	check('v0 tailBend2 within 2deg', Math.abs(back.tailBend2 - 15) < 2, `${back.tailBend2}`);
+	check('v0 chestSize within 0.02', Math.abs(back.chestSize - 0.5) < 0.02, `${back.chestSize}`);
+
+	// The official Manipulator's exact pixel layout.
+	const px = (x, y) => {
+		const i = (y * 64 + x) * 4;
+		return [img.data[i], img.data[i + 1], img.data[i + 2], img.data[i + 3]];
+	};
+	eq('v0 magic pixel is Magic Blue', px(0, 32).slice(0, 3), [0x3f, 0x23, 0xd8]);
+	eq('v0 ear mode pixel is Magic Cyan (AROUND)', px(1, 32).slice(0, 3), [0x23, 0xd8, 0xc6]);
+	eq('v0 snout pixel is w,h,d', px(2, 33).slice(0, 3), [5, 3, 6]);
+	eq('v0 etc pixel is chest,offset,cape', px(3, 33).slice(0, 3), [64, 2, 16]);
+}
+
+// --- disabled -------------------------------------------------------------
+section('clearing');
+{
+	const img = blankSkin();
+	Codec.writeFeatures(img, SAMPLE);
+	Codec.clearFeatures(img);
+	eq('cleared skin reports no data', Codec.detectFormat(img), 'none');
+}
+
+// --- ears-common bridge ---------------------------------------------------
+section('ears-common bridge');
+{
+	check('initCommon is present', typeof initCommon === 'function');
+	check('bridge initialises', Bridge.init());
+	log(`  info  ears-common version ${Bridge.commonVersion()}`, 'info');
+
+	const img = blankSkin();
+	V0.writeFeaturesV0(img, { ...SAMPLE, wingMode: 'NONE', capeEnabled: false, emissive: false });
+	const { objects, alfalfa } = Bridge.buildQuads(img, { slim: false, jacket: true });
+
+	check(`produced quads (${objects.length})`, objects.length > 0);
+	const parts = new Set();
+	let anchoredAll = true;
+	for (const o of objects) {
+		const anchor = (o.moves || []).find((m) => m.type === 'anchor');
+		if (anchor) parts.add(anchor.part);
+		else anchoredAll = false;
+		if (o.type === 'quad' && (!o.uvs || o.uvs.length !== 4)) anchoredAll = false;
+	}
+	check('every object is anchored and has 4 UVs', anchoredAll);
+	log(`  info  anchored to: ${[...parts].sort().join(', ')}`, 'info');
+	check('anchors to the head (ears/snout/horn)', parts.has('head'));
+	check('anchors to the torso (tail)', parts.has('torso'));
+	check('claws anchor to legs', parts.has('left_leg') || parts.has('right_leg'));
+	log(`  info  alfalfa entries: ${Object.keys(alfalfa.data).join(', ') || '(none)'}`, 'info');
+
+	// A skin with no Ears data should render nothing.
+	const blank = blankSkin();
+	const none = Bridge.buildQuads(blank, {});
+	eq('no magic pixels -> no quads', none.objects.length, 0);
+
+	// window must be left clean.
+	const leaked = ['rebuildQuads', 'encodeAlfalfa', 'renderObjects', 'alfalfaData',
+		'magicPixels', 'magicPixelValues', 'commonVersion'].filter((k) => k in window);
+	eq('no globals leaked into window', leaked, []);
+}
+
+// --- alfalfa round trip ---------------------------------------------------
+section('alfalfa');
+{
+	// A tiny valid PNG (1x1 red) is enough to prove the encode/decode path.
+	const c = document.createElement('canvas');
+	c.width = 20; c.height = 16;
+	const cx = c.getContext('2d');
+	cx.fillStyle = '#ff0000'; cx.fillRect(0, 0, 20, 16);
+	const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+	const wing = new Uint8Array(await blob.arrayBuffer());
+
+	const img = blankSkin();
+	V0.writeFeaturesV0(img, SAMPLE);
+	Bridge.writeAlfalfa(img, { version: 1, data: { wing } });
+
+	const { alfalfa, objects } = Bridge.buildQuads(img, {});
+	check('wing survives the alpha-channel round trip', !!alfalfa.data.wing);
+	if (alfalfa.data.wing) {
+		eq('wing bytes are identical', Array.from(alfalfa.data.wing), Array.from(wing));
+	}
+	const wingQuads = objects.filter((o) => o.texture === 'wing');
+	check(`wing geometry is rendered (${wingQuads.length} quads)`, wingQuads.length > 0);
+}
+
+section('result');
+log(`${passed} passed, ${failed} failed`, failed ? 'fail' : 'pass');
+window.__results = { passed, failed };
+</script>
+</body>
+</html>
