@@ -272,6 +272,17 @@ export function applyFeatures(features, writeFormat = 'v0', target = null) {
 let format = null;
 
 export function registerFormat() {
+	// Same reasoning as the panel: a reload must not leave a second format (and a
+	// second start-screen entry) behind.
+	const existing = Formats[FORMAT_ID];
+	if (existing) {
+		try {
+			existing.delete();
+		} catch (e) {
+			console.warn('[Ears] could not remove the previous format', e);
+		}
+	}
+
 	buildDialog();
 
 	format = new ModelFormat({
@@ -296,7 +307,9 @@ export function registerFormat() {
 		forward_direction: '-z',
 		rotate_cubes: false,
 		stretch_cubes: false,
-		meshes: false,
+		// Ears geometry is built as real Mesh elements so it can be painted in 3D,
+		// selected, hidden, moved and deleted like any other part of the model.
+		meshes: true,
 		locators: false,
 		billboards: false,
 		bounding_boxes: false,

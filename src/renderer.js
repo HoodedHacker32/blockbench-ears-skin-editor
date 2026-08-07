@@ -42,7 +42,7 @@ function isLayerCube(cube) {
  * Resolve an Ears body part to { group, cube } from the current project.
  * Returns null when the project has no matching bone (custom models).
  */
-function resolvePart(partName) {
+export function resolvePart(partName) {
 	const aliases = PART_ALIASES[partName];
 	if (!aliases) return null;
 
@@ -69,7 +69,7 @@ function resolvePart(partName) {
  * Minecraft. Detect it from the model rather than assuming, so hand-built or
  * future models still line up.
  */
-function isMirroredOnX() {
+export function isMirroredOnX() {
 	for (const group of Group.all) {
 		const name = normalise(group.name);
 		if (name === 'right arm' || name === 'right leg') return group.origin[0] > 0;
@@ -95,7 +95,7 @@ function buildAnchorMatrix(part, mirrored) {
 		.multiply(new THREE.Matrix4().makeScale(mirrored ? -1 : 1, -1, 1));
 }
 
-function applyMoves(matrix, moves, parts, mirrored) {
+export function applyMoves(matrix, moves, parts, mirrored) {
 	let anchored = null;
 	for (const m of moves) {
 		switch (m.type) {
@@ -229,8 +229,14 @@ export class EarsPreview {
 		this.missingParts.clear();
 	}
 
-	/** Rebuild the preview from a renderObjects list. */
-	build(objects) {
+	/**
+	 * Rebuild the preview from a renderObjects list.
+	 *
+	 * `accept` optionally filters which quads this path handles -- when the
+	 * project supports Mesh elements, the skin quads are built as real geometry
+	 * instead and only the rest (wings, cape) fall through to here.
+	 */
+	build(objects, accept = null) {
 		this.clear();
 		if (!objects || !objects.length) return;
 
@@ -238,6 +244,7 @@ export class EarsPreview {
 		const mirrored = isMirroredOnX();
 		for (const o of objects) {
 			if (o.type !== 'quad') continue; // 'point' objects are debug-only
+			if (accept && !accept(o)) continue;
 
 			const matrix = new THREE.Matrix4();
 			const anchored = applyMoves(matrix, o.moves || [], parts, mirrored);

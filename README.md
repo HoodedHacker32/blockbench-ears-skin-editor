@@ -17,8 +17,10 @@ the mod's actual output rather than a reimplementation that drifts.
   get box UV, the layer cubes, painting, and the full **pose** system with its preset poses — natural,
   walking, crouching, sitting, jumping, aiming — plus custom poses. The Ears geometry is parented to the
   bones, so it moves with the pose.
-- **Live 3D preview.** Every Ears feature is built as quads and parented to the matching bone. Change a
-  setting, or paint the skin, and it updates immediately.
+- **Paint the ears in 3D.** The Ears geometry is built as real Blockbench mesh elements parented to the
+  matching bones, so every paint tool works on it exactly as it does on the body — and you can select,
+  hide, move and delete it like any other part.
+- **Live 3D preview.** Change a setting, or paint the skin, and it updates immediately.
 - **Tells you where to paint.** Turning on a feature gives you geometry with nothing drawn on it, which
   is the single most confusing thing about Ears. The panel lists the exact texture regions your current
   config reads — derived from the real quad UVs, not a hardcoded table — and "Fill empty regions" paints
@@ -73,6 +75,15 @@ anything to show up in game. There is no config file.
   regions, so it has to be written to a flat image. If layers are enabled the plugin offers to flatten.
 - **Emissive** marks the palette in `(52,32)-(56,36)` as glowing. The preview renders those quads
   unlit rather than simulating the in-game bloom.
+- **The Ears meshes are yours to break.** They're ordinary elements, so moving or deleting them is
+  allowed and survives painting. They're only regenerated when you change an Ears *setting* — or when
+  you press **Rebuild Ears geometry**, which is the way back after you've taken one apart.
+- **Wings and capes stay a read-only preview.** They sample a 20x16 texture, and mesh face UVs are in
+  the project's 64x64 space, so they can't be mapped onto project geometry. Paint them via
+  "Paint wing in Blockbench" instead, which adds the wing as its own texture.
+- **Plain Minecraft Skin projects get the preview, not the meshes**, because that format doesn't allow
+  mesh elements. To paint Ears geometry on an existing skin, make an Ears Skin project and choose
+  "Import a PNG…" for the texture.
 
 ## Building
 
@@ -106,6 +117,7 @@ official manipulator does, and that a wing PNG survives the alpha-channel round 
 | `src/format.js` | The "Ears Skin" model format and its setup dialog |
 | `src/presets.js` | Player model definitions and the starting feature presets |
 | `src/regions.js` | Derives which texture pixels the current config reads |
+| `src/meshbuilder.js` | Builds the Ears quads as real, paintable Blockbench mesh elements |
 | `src/skin.js` | Texture reads/writes through the undo system; PNG to canvas and back |
 | `src/index.js` | Plugin registration, panel UI, event wiring |
 
@@ -121,6 +133,23 @@ Rather than reimplementing the skin editor, the format leans on two things:
 The only patching is widening five built-in toolbar actions that hardcode `formats: ['skin']`
 (`toggle_skin_layer`, `convert_minecraft_skin_variant`, `explode_skin_model`, `custom_skin_poses`,
 `add_custom_skin_pose`). Those are restored on unload.
+
+### Why the geometry is mesh elements
+
+Blockbench's paint pipeline resolves a 3D click to `element.faces[face].uv` — it needs a real element
+with real faces. A raw three.js overlay can't participate, which is why the ears used to be
+look-but-don't-touch.
+
+There's no cheating it by hitting an existing cube either: Ears deliberately samples the *gaps* in the
+vanilla atlas. The "Above" ears read `(24,0)-(40,8)`, and on an 8x8x8 head at `(0,0)` the only faces in
+`v 0-8` are top `(8-16)` and bottom `(16-24)` — so `u 24-32` is unused, and `u 32-40` is the matching
+unused strip in the hat block. No cube face covers those pixels.
+
+Two details that bite:
+
+- Mesh face UVs are in texture pixels, not normalised.
+- Blockbench renders meshes `DoubleSide`, but Ears emits coincident front/back quad pairs that rely on
+  backface culling. Left alone they z-fight, so the pair is straddled by ±0.01 into a paper-thin sheet.
 
 ## How the preview is positioned
 

@@ -17,6 +17,7 @@ import * as CodecV0 from './codec-v0.js';
 import * as Skin from './skin.js';
 import * as Regions from './regions.js';
 import * as Fmt from './format.js';
+import * as MeshBuilder from './meshbuilder.js';
 import { EarsPreview } from './renderer.js';
 
 const PLUGIN_ID = 'ears_skin_editor';
@@ -50,6 +51,8 @@ const vm = {
 	regions: [],
 	regionSummary: { count: 0, total: 0, empty: 0 },
 	showRegions: false,
+	paintable: false,
+	meshStats: null,
 };
 
 // --- reading / writing -----------------------------------------------------
@@ -121,7 +124,44 @@ function refresh() {
 	state.skinCanvas = Skin.cloneToCanvas(texture, state.skinCanvas);
 	state.preview.setTexture('skin', state.skinCanvas);
 	state.preview.setTexture('emissive_skin', state.skinCanvas);
-	state.preview.build(objects);
+
+	// Real Mesh elements are what make the geometry paintable, but they're only
+	// available in formats that allow meshes. Elsewhere everything stays on the
+	// read-only overlay.
+	const useMeshes = !!(Format && Format.meshes);
+	vm.paintable = useMeshes;
+
+	// Geometry only depends on the Ears configuration, not on the pixels. Painting
+	// changes the texture, which the meshes already reference -- so rebuilding on
+	// every brush stroke would be wasted work that also throws away any manual
+	// edits made to the generated geometry.
+	// Keyed by project as well as config: two projects can share an identical Ears
+	// setup, and without the uuid switching between them would skip the rebuild
+	// and leave the newly-selected one with no geometry.
+	const fingerprint = JSON.stringify([
+		Project.uuid,
+		vm.features,
+		vm.slim,
+		vm.jacket,
+		vm.hasWing,
+		vm.hasCape,
+		useMeshes,
+	]);
+	const geometryChanged = fingerprint !== state.fingerprint;
+	state.fingerprint = fingerprint;
+
+	if (useMeshes) {
+		// Wing and cape quads sample 20x16 textures, which don't map onto the
+		// project's 64x64 UV space, so those keep using the overlay.
+		state.preview.build(objects, (o) => o.texture !== 'skin' && o.texture !== 'emissive_skin');
+		if (geometryChanged) {
+			const result = MeshBuilder.buildMeshes(objects, texture);
+			vm.meshStats = result;
+		}
+	} else {
+		state.preview.build(objects);
+		vm.meshStats = null;
+	}
 	vm.missingParts = Array.from(state.preview.missingParts);
 
 	state.regions = Regions.computeRegions(objects);
@@ -198,6 +238,23 @@ function fillRegions(onlyEmpty) {
 	if (ok) {
 		Blockbench.showQuickMessage(`Painted ${painted} pixel${painted === 1 ? '' : 's'}`, 2000);
 		refresh();
+	}
+}
+
+/**
+ * Force the generated geometry to be rebuilt from the magic pixels. Needed
+ * because the meshes are freely editable -- once you've moved or deleted some,
+ * there has to be a way back.
+ */
+function rebuildGeometry() {
+	state.fingerprint = null;
+	refresh();
+	const stats = vm.meshStats;
+	if (stats) {
+		Blockbench.showQuickMessage(
+			`Rebuilt ${stats.faces} face${stats.faces === 1 ? '' : 's'} across ${stats.meshes} mesh${stats.meshes === 1 ? '' : 'es'}`,
+			2000
+		);
 	}
 }
 
@@ -354,6 +411,18 @@ const SELECT_OPTIONS = {
 };
 
 function buildPanel() {
+	// Reloading the plugin (or loading it twice) would otherwise stack a second
+	// panel on top of the first. The old one keeps its own dead module state, so
+	// it just sits there looking broken -- drop it before building ours.
+	const existing = Panels[PLUGIN_ID];
+	if (existing) {
+		try {
+			existing.delete();
+		} catch (e) {
+			console.warn('[Ears] could not remove the previous panel', e);
+		}
+	}
+
 	state.panel = new Panel(PLUGIN_ID, {
 		name: 'Ears',
 		id: PLUGIN_ID,
@@ -372,6 +441,7 @@ function buildPanel() {
 				editAux: (key) => editAuxInProject(key),
 				stopEditingAux: (key) => stopEditingAux(key),
 				fillRegions: (onlyEmpty) => fillRegions(onlyEmpty),
+				rebuildGeometry: () => rebuildGeometry(),
 				openManipulator: () => Blockbench.openLink('https://ears.y2k.diy/manipulator/'),
 				toggleEnabled() {
 					vm.features.enabled = !vm.features.enabled;
@@ -550,6 +620,26 @@ function buildPanel() {
 									<code>{{ r.x }}, {{ r.y }}</code> &mdash; {{ r.w }}&times;{{ r.h }}
 								</li>
 							</ul>
+						</template>
+
+						<template v-if="vm.features.enabled">
+							<h4>Geometry</h4>
+							<div class="ears_hint" v-if="vm.paintable">
+								Built as real mesh elements, so you can paint them in 3D and select,
+								hide, move or delete them like any other part. Changing a setting above
+								regenerates them.
+							</div>
+							<div class="ears_hint" v-else>
+								This project's format doesn't allow mesh elements, so the Ears geometry
+								is a read-only preview. Create an <b>Ears Skin</b> project to paint it in 3D.
+							</div>
+							<div class="ears_row ears_buttons" v-if="vm.paintable">
+								<button @click="rebuildGeometry()">Rebuild Ears geometry</button>
+							</div>
+							<div class="ears_hint" v-if="vm.meshStats && vm.meshStats.skipped">
+								{{ vm.meshStats.skipped }} wing/cape quad(s) stay as a read-only preview —
+								they sample a 20&times;16 texture, which doesn't fit this project's UV space.
+							</div>
 						</template>
 
 						<div class="ears_footer">

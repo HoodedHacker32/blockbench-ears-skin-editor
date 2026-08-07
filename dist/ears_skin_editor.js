@@ -1648,6 +1648,14 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
   }
   var format = null;
   function registerFormat() {
+    const existing = Formats[FORMAT_ID];
+    if (existing) {
+      try {
+        existing.delete();
+      } catch (e) {
+        console.warn("[Ears] could not remove the previous format", e);
+      }
+    }
     buildDialog();
     format = new ModelFormat({
       id: FORMAT_ID,
@@ -1670,7 +1678,9 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       forward_direction: "-z",
       rotate_cubes: false,
       stretch_cubes: false,
-      meshes: false,
+      // Ears geometry is built as real Mesh elements so it can be painted in 3D,
+      // selected, hidden, moved and deleted like any other part of the model.
+      meshes: true,
       locators: false,
       billboards: false,
       bounding_boxes: false,
@@ -1878,14 +1888,21 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       this.meshes = [];
       this.missingParts.clear();
     }
-    /** Rebuild the preview from a renderObjects list. */
-    build(objects) {
+    /**
+     * Rebuild the preview from a renderObjects list.
+     *
+     * `accept` optionally filters which quads this path handles -- when the
+     * project supports Mesh elements, the skin quads are built as real geometry
+     * instead and only the rest (wings, cape) fall through to here.
+     */
+    build(objects, accept = null) {
       this.clear();
       if (!objects || !objects.length) return;
       const parts = /* @__PURE__ */ new Map();
       const mirrored = isMirroredOnX();
       for (const o of objects) {
         if (o.type !== "quad") continue;
+        if (accept && !accept(o)) continue;
         const matrix = new THREE.Matrix4();
         const anchored = applyMoves(matrix, o.moves || [], parts, mirrored);
         if (!anchored) {
@@ -1915,6 +1932,104 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       this.textures.clear();
     }
   };
+
+  // src/meshbuilder.js
+  var SHEET = 0.01;
+  var PART_LABELS = {
+    head: "Head",
+    torso: "Body",
+    left_arm: "Left Arm",
+    right_arm: "Right Arm",
+    left_leg: "Left Leg",
+    right_leg: "Right Leg"
+  };
+  var GENERATED_KEY = "ears_generated";
+  function generatedMeshes() {
+    return Mesh.all.filter((m) => m[GENERATED_KEY]);
+  }
+  function clearGenerated() {
+    const existing = generatedMeshes();
+    for (const mesh of existing) mesh.remove();
+    return existing.length;
+  }
+  function buildMeshes(objects, skinTexture) {
+    const selectedNames = new Set(
+      (typeof Outliner !== "undefined" && Outliner.selected ? Outliner.selected : []).filter((e) => e[GENERATED_KEY]).map((e) => e.name)
+    );
+    clearGenerated();
+    if (!objects || !objects.length || !skinTexture) return { meshes: 0, faces: 0, skipped: 0 };
+    const mirrored = isMirroredOnX();
+    const parts = /* @__PURE__ */ new Map();
+    const byPart = /* @__PURE__ */ new Map();
+    let skipped = 0;
+    for (const o of objects) {
+      if (o.type !== "quad") continue;
+      if (o.texture !== "skin" && o.texture !== "emissive_skin") {
+        skipped++;
+        continue;
+      }
+      const matrix = new THREE.Matrix4();
+      const anchored = applyMoves(matrix, o.moves || [], parts, mirrored);
+      if (!anchored) {
+        skipped++;
+        continue;
+      }
+      const anchor = (o.moves || []).find((m) => m.type === "anchor");
+      const key = anchor ? anchor.part : "head";
+      if (!byPart.has(key)) byPart.set(key, { part: anchored, quads: [] });
+      byPart.get(key).quads.push({ o, matrix });
+    }
+    let meshCount = 0;
+    let faceCount = 0;
+    for (const [partKey, { part, quads }] of byPart) {
+      const mesh = new Mesh({
+        name: `Ears ${PART_LABELS[partKey] || partKey}`,
+        origin: part.group.origin.slice(),
+        vertices: {}
+      });
+      mesh[GENERATED_KEY] = true;
+      for (const { o, matrix } of quads) {
+        const face = buildFace(mesh, o, matrix, skinTexture);
+        if (face) faceCount++;
+      }
+      mesh.addTo(part.group);
+      mesh.init();
+      if (selectedNames.has(mesh.name)) mesh.select({ shiftKey: true }, false);
+      meshCount++;
+    }
+    return { meshes: meshCount, faces: faceCount, skipped };
+  }
+  function buildFace(mesh, o, matrix, skinTexture) {
+    const w = o.width;
+    const h = o.height;
+    const z = o.back ? SHEET : -SHEET;
+    const corners = [
+      [0, 0, z],
+      [0, h, z],
+      [w, h, z],
+      [w, 0, z]
+    ];
+    const uvOrder = [3, 0, 1, 2];
+    const positions = corners.map((c) => {
+      const v = new THREE.Vector3(c[0], c[1], c[2]).applyMatrix4(matrix);
+      return [v.x, v.y, v.z];
+    });
+    const keys = mesh.addVertices(...positions);
+    const uv = {};
+    const tw = Project.texture_width || 64;
+    const th = Project.texture_height || 64;
+    keys.forEach((key, i) => {
+      const source = o.uvs[uvOrder[i]];
+      uv[key] = [source[0] * tw, source[1] * th];
+    });
+    const face = new MeshFace(mesh, {
+      vertices: keys,
+      uv,
+      texture: skinTexture ? skinTexture.uuid : false
+    });
+    mesh.addFaces(face);
+    return face;
+  }
 
   // src/index.js
   var PLUGIN_ID = "ears_skin_editor";
@@ -1946,7 +2061,9 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     notices: [],
     regions: [],
     regionSummary: { count: 0, total: 0, empty: 0 },
-    showRegions: false
+    showRegions: false,
+    paintable: false,
+    meshStats: null
   };
   function isSkinProject() {
     return !!(Project && Format && FORMATS.includes(Format.id));
@@ -2004,7 +2121,29 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     state2.skinCanvas = cloneToCanvas(texture, state2.skinCanvas);
     state2.preview.setTexture("skin", state2.skinCanvas);
     state2.preview.setTexture("emissive_skin", state2.skinCanvas);
-    state2.preview.build(objects);
+    const useMeshes = !!(Format && Format.meshes);
+    vm.paintable = useMeshes;
+    const fingerprint = JSON.stringify([
+      Project.uuid,
+      vm.features,
+      vm.slim,
+      vm.jacket,
+      vm.hasWing,
+      vm.hasCape,
+      useMeshes
+    ]);
+    const geometryChanged = fingerprint !== state2.fingerprint;
+    state2.fingerprint = fingerprint;
+    if (useMeshes) {
+      state2.preview.build(objects, (o) => o.texture !== "skin" && o.texture !== "emissive_skin");
+      if (geometryChanged) {
+        const result = buildMeshes(objects, texture);
+        vm.meshStats = result;
+      }
+    } else {
+      state2.preview.build(objects);
+      vm.meshStats = null;
+    }
     vm.missingParts = Array.from(state2.preview.missingParts);
     state2.regions = computeRegions(objects);
     vm.regions = state2.regions.filter((r) => r.texture === "skin");
@@ -2066,6 +2205,17 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     if (ok) {
       Blockbench.showQuickMessage(`Painted ${painted} pixel${painted === 1 ? "" : "s"}`, 2e3);
       refresh();
+    }
+  }
+  function rebuildGeometry() {
+    state2.fingerprint = null;
+    refresh();
+    const stats = vm.meshStats;
+    if (stats) {
+      Blockbench.showQuickMessage(
+        `Rebuilt ${stats.faces} face${stats.faces === 1 ? "" : "s"} across ${stats.meshes} mesh${stats.meshes === 1 ? "" : "es"}`,
+        2e3
+      );
     }
   }
   function updateNotices() {
@@ -2216,6 +2366,14 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     ]
   };
   function buildPanel() {
+    const existing = Panels[PLUGIN_ID];
+    if (existing) {
+      try {
+        existing.delete();
+      } catch (e) {
+        console.warn("[Ears] could not remove the previous panel", e);
+      }
+    }
     state2.panel = new Panel(PLUGIN_ID, {
       name: "Ears",
       id: PLUGIN_ID,
@@ -2234,6 +2392,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
           editAux: (key) => editAuxInProject(key),
           stopEditingAux: (key) => stopEditingAux(key),
           fillRegions: (onlyEmpty) => fillRegions(onlyEmpty),
+          rebuildGeometry: () => rebuildGeometry(),
           openManipulator: () => Blockbench.openLink("https://ears.y2k.diy/manipulator/"),
           toggleEnabled() {
             vm.features.enabled = !vm.features.enabled;
@@ -2412,6 +2571,26 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
 									<code>{{ r.x }}, {{ r.y }}</code> &mdash; {{ r.w }}&times;{{ r.h }}
 								</li>
 							</ul>
+						</template>
+
+						<template v-if="vm.features.enabled">
+							<h4>Geometry</h4>
+							<div class="ears_hint" v-if="vm.paintable">
+								Built as real mesh elements, so you can paint them in 3D and select,
+								hide, move or delete them like any other part. Changing a setting above
+								regenerates them.
+							</div>
+							<div class="ears_hint" v-else>
+								This project's format doesn't allow mesh elements, so the Ears geometry
+								is a read-only preview. Create an <b>Ears Skin</b> project to paint it in 3D.
+							</div>
+							<div class="ears_row ears_buttons" v-if="vm.paintable">
+								<button @click="rebuildGeometry()">Rebuild Ears geometry</button>
+							</div>
+							<div class="ears_hint" v-if="vm.meshStats && vm.meshStats.skipped">
+								{{ vm.meshStats.skipped }} wing/cape quad(s) stay as a read-only preview \u2014
+								they sample a 20&times;16 texture, which doesn't fit this project's UV space.
+							</div>
 						</template>
 
 						<div class="ears_footer">
