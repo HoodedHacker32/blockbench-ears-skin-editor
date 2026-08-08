@@ -13,6 +13,11 @@ the mod's actual output rather than a reimplementation that drifts.
 - **Its own model format.** "Ears Skin" appears on the start screen next to Minecraft Skin, with a
   setup dialog: pick wide or slim, pick a texture, and configure the Ears features up front — including
   starting presets (Fox, Cat, Bunny, Wolf, Deer, Floppy-eared, Winged) that fill the rest of the form in.
+- **Import an existing Ears skin and it reads itself.** Choose "Import a PNG…" and if the skin already
+  has magic pixels, the dialog detects them and fills every field in. Leave them alone and the original
+  bytes are preserved untouched — no lossy re-encode of the quantised values.
+- **Export as a single PNG.** `File → Export → Export Ears Skin` writes the one image you upload to
+  Mojang, magic pixels and embedded wing/cape included.
 - **A real skin editor, not a side panel.** The format reuses Blockbench's own skin machinery, so you
   get box UV, the layer cubes, painting, and the full **pose** system with its preset poses — natural,
   walking, crouching, sitting, jumping, aiming — plus custom poses. The Ears geometry is parented to the
@@ -52,10 +57,13 @@ Requires Blockbench 4.10 or newer. Developed and tested against 5.1.6.
 
 ## Using it
 
-1. **New Model > Ears Skin**. Choose the player model, a texture, and a starting preset.
+1. **New Model > Ears Skin**. Choose the player model, a texture, and a starting preset — or
+   "Import a PNG…" to open an existing skin, whose Ears settings are read back automatically.
 2. The project opens in paint mode with the **Ears** panel in the right sidebar.
 3. Hit **Fill empty regions** to see where every enabled feature reads from, then paint over it.
 4. Switch to **Pose** mode to check it from every angle.
+5. **File > Export > Export Ears Skin** for the finished PNG. (Saving as `.bbmodel` keeps your project
+   — bones, geometry edits and all — but it's the PNG that goes to Mojang.)
 
 The panel also works on ordinary **Minecraft Skin** projects, so existing skins can be opened and
 edited without converting anything.
@@ -78,6 +86,10 @@ anything to show up in game. There is no config file.
 - **The Ears meshes are yours to break.** They're ordinary elements, so moving or deleting them is
   allowed and survives painting. They're only regenerated when you change an Ears *setting* — or when
   you press **Rebuild Ears geometry**, which is the way back after you've taken one apart.
+- **Reopening a `.bbmodel` keeps the geometry you saved**, including hand edits, rather than silently
+  regenerating it. Blockbench doesn't serialise plugin-set properties, so the plugin re-identifies its
+  own meshes and textures by name on load — a narrow match, under a known bone, so meshes you made and
+  named yourself are left alone.
 - **Wings and capes are paintable too.** They aren't in the skin's atlas at all — they're whole PNG
   files hidden in its alpha channel — so they get their own texture and their own UV space, and the
   plugin adds them to the project automatically when a skin contains one. Paint the wing in 3D and it

@@ -63,6 +63,73 @@ const PROTRUSIONS = { none: 'None', claws: 'Claws', horn: 'Horn', both: 'Claws &
 
 let dialog = null;
 let suppressPresetReset = false;
+let lastInspectedFile = null;
+/** Features read out of an imported skin, so we can avoid rewriting them. */
+let detectedFeatures = null;
+
+/**
+ * Blockbench's file form field hands back `content` as a data URL, but importers
+ * elsewhere pass raw bytes. Texture.fromFile only understands the string form,
+ * and silently produces a blank 16x16 texture otherwise -- so normalise first.
+ */
+export function toDataURL(file) {
+	if (!file) return null;
+	const content = file.content;
+	if (typeof content === 'string') {
+		return content.startsWith('data:') ? content : `data:image/png;base64,${content}`;
+	}
+	if (!content) return null;
+	const bytes = content instanceof Uint8Array ? content : new Uint8Array(content);
+	let binary = '';
+	for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+	return `data:image/png;base64,${btoa(binary)}`;
+}
+
+/** Decode a PNG (data URL) to ImageData without touching the DOM tree. */
+function decodeToImageData(dataUrl) {
+	return new Promise((resolve, reject) => {
+		const url = dataUrl;
+		const img = new Image();
+		img.onload = () => {
+			const canvas = document.createElement('canvas');
+			canvas.width = img.naturalWidth;
+			canvas.height = img.naturalHeight;
+			const ctx = canvas.getContext('2d', { willReadFrequently: true });
+			ctx.imageSmoothingEnabled = false;
+			ctx.drawImage(img, 0, 0);
+			resolve(ctx.getImageData(0, 0, canvas.width, canvas.height));
+		};
+		img.onerror = reject;
+		img.src = url;
+	});
+}
+
+/** Read Ears data out of a skin chosen for import and fill the dialog in. */
+async function inspectImportedSkin(file, dlg) {
+	try {
+		const dataUrl = toDataURL(file);
+		if (!dataUrl) return;
+		const imageData = await decodeToImageData(dataUrl);
+		if (imageData.width !== 64 || imageData.height !== 64) return;
+
+		const version = Codec.detectFormat(imageData);
+		if (version === 'none') {
+			detectedFeatures = null;
+			return;
+		}
+		const features = version === 'v1' ? Codec.readFeatures(imageData) : CodecV0.readFeaturesV0(imageData);
+		if (!features) return;
+
+		detectedFeatures = features;
+		suppressPresetReset = true;
+		dlg.setFormValues({ ...featuresToForm(features), ears_enabled: true, data_format: version }, false);
+		suppressPresetReset = false;
+		dlg.last_preset = dlg.getFormResult().preset;
+		Blockbench.showQuickMessage(`Found Ears ${version} data in that skin — settings filled in`, 3000);
+	} catch (e) {
+		console.error('[Ears] could not inspect the imported skin', e);
+	}
+}
 
 function formToFeatures(form) {
 	const f = Codec.defaultFeatures();
@@ -172,6 +239,21 @@ function buildDialog() {
 		},
 		onFormChange(form) {
 			if (suppressPresetReset) return;
+
+			// A skin picked for import may already carry Ears data. Read it and fill
+			// the form in, so importing an existing Ears skin doesn't quietly
+			// overwrite its settings with the dialog's defaults.
+			const file = form.texture_source === 'file' ? form.texture_file : null;
+			const fileKey = file ? `${file.name || ''}:${(file.content && file.content.byteLength) || 0}` : null;
+			if (fileKey && fileKey !== lastInspectedFile) {
+				lastInspectedFile = fileKey;
+				inspectImportedSkin(file, this);
+			}
+			if (!fileKey) {
+				lastInspectedFile = null;
+				detectedFeatures = null;
+			}
+
 			// Picking a preset fills in the rest of the form.
 			if (this.last_preset !== form.preset) {
 				this.last_preset = form.preset;
@@ -180,6 +262,7 @@ function buildDialog() {
 					suppressPresetReset = true;
 					this.setFormValues(featuresToForm({ ...Codec.defaultFeatures(), ...preset.features }), false);
 					suppressPresetReset = false;
+					detectedFeatures = null; // the user has overridden what we read
 				}
 			}
 		},
@@ -194,7 +277,11 @@ function buildDialog() {
 // --- project construction --------------------------------------------------
 
 function textureArgument(form) {
-	if (form.texture_source === 'file' && form.texture_file) return form.texture_file;
+	if (form.texture_source === 'file' && form.texture_file) {
+		// Hand the codec a shape Texture.fromFile definitely understands.
+		const content = toDataURL(form.texture_file);
+		if (content) return { name: form.texture_file.name || 'skin.png', content };
+	}
 	if (form.texture_source === 'blank') return false;
 	return true; // let the codec generate its UV template
 }
@@ -224,9 +311,17 @@ function createProject(form) {
 	// there yet -- writing magic pixels now would either no-op or be clobbered
 	// when the image finishes loading. Wait for it.
 	const features = form.ears_enabled ? formToFeatures(form) : null;
+
+	// If the skin was imported with Ears data already in it and the user left
+	// those fields alone, don't write them back. Re-encoding is lossy for the
+	// quantised fields (tail bends land within a degree or two), and rewriting
+	// would also disturb bytes the imported file had exactly right.
+	const unchanged =
+		features && detectedFeatures && JSON.stringify(features) === JSON.stringify(detectedFeatures);
+
 	whenTextureReady((texture) => {
 		bindCubesToSkin(texture);
-		if (features) applyFeatures(features, Project.ears_data_format, texture);
+		if (features && !unchanged) applyFeatures(features, Project.ears_data_format, texture);
 		Blockbench.dispatchEvent('ears_project_created', { project: Project });
 	});
 }
@@ -351,6 +446,9 @@ export function registerFormat() {
 		},
 
 		new() {
+			// Forget anything read from a previously chosen file.
+			lastInspectedFile = null;
+			detectedFeatures = null;
 			dialog.show();
 			// Re-apply the current preset so the form is consistent on reopen.
 			dialog.last_preset = undefined;

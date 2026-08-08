@@ -17,9 +17,37 @@ export function getSkinTexture() {
 	return candidates.find((t) => t.selected) || candidates[0];
 }
 
+const AUX_DISPLAY_NAMES = { [WING_TEXTURE_NAME]: 'Ears Wing', [CAPE_TEXTURE_NAME]: 'Ears Cape' };
+
+/**
+ * Custom properties like `ears_role` don't survive a .bbmodel round trip -- only
+ * Blockbench's own known fields are serialised. So fall back to matching on the
+ * name and re-tag, otherwise reopening a project would add a duplicate wing
+ * texture every time.
+ */
 export function getAuxTexture(role) {
 	if (!Project || !Project.textures) return null;
-	return Project.textures.find((t) => t.ears_role === role) || null;
+	const tagged = Project.textures.find((t) => t.ears_role === role);
+	if (tagged) return tagged;
+
+	const named = Project.textures.find((t) => t.name === AUX_DISPLAY_NAMES[role] && !t.ears_role);
+	if (named) {
+		named.ears_role = role;
+		return named;
+	}
+	return null;
+}
+
+/** True if any pixel is drawn. A texture restored from a project file reports its
+ *  size immediately but paints its bitmap asynchronously, so this is how we tell
+ *  "genuinely blank" from "not decoded yet". */
+export function hasAnyPixels(imageData) {
+	if (!imageData) return false;
+	const d = imageData.data;
+	for (let i = 3; i < d.length; i += 4) {
+		if (d[i] !== 0) return true;
+	}
+	return false;
 }
 
 /** True if a texture has layers turned on, which blocks in-place pixel writes. */

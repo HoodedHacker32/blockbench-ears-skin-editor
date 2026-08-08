@@ -1138,9 +1138,25 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     if (!candidates.length) return null;
     return candidates.find((t) => t.selected) || candidates[0];
   }
+  var AUX_DISPLAY_NAMES = { [WING_TEXTURE_NAME]: "Ears Wing", [CAPE_TEXTURE_NAME]: "Ears Cape" };
   function getAuxTexture(role) {
     if (!Project || !Project.textures) return null;
-    return Project.textures.find((t) => t.ears_role === role) || null;
+    const tagged = Project.textures.find((t) => t.ears_role === role);
+    if (tagged) return tagged;
+    const named = Project.textures.find((t) => t.name === AUX_DISPLAY_NAMES[role] && !t.ears_role);
+    if (named) {
+      named.ears_role = role;
+      return named;
+    }
+    return null;
+  }
+  function hasAnyPixels(imageData) {
+    if (!imageData) return false;
+    const d = imageData.data;
+    for (let i = 3; i < d.length; i += 4) {
+      if (d[i] !== 0) return true;
+    }
+    return false;
   }
   function isLayered(texture) {
     return !!(texture && texture.layers_enabled && texture.layers && texture.layers.length);
@@ -1500,6 +1516,60 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
   var PROTRUSIONS2 = { none: "None", claws: "Claws", horn: "Horn", both: "Claws & Horn" };
   var dialog = null;
   var suppressPresetReset = false;
+  var lastInspectedFile = null;
+  var detectedFeatures = null;
+  function toDataURL(file) {
+    if (!file) return null;
+    const content = file.content;
+    if (typeof content === "string") {
+      return content.startsWith("data:") ? content : `data:image/png;base64,${content}`;
+    }
+    if (!content) return null;
+    const bytes = content instanceof Uint8Array ? content : new Uint8Array(content);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return `data:image/png;base64,${btoa(binary)}`;
+  }
+  function decodeToImageData(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const url = dataUrl;
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0);
+        resolve(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      };
+      img.onerror = reject;
+      img.src = url;
+    });
+  }
+  async function inspectImportedSkin(file, dlg) {
+    try {
+      const dataUrl = toDataURL(file);
+      if (!dataUrl) return;
+      const imageData = await decodeToImageData(dataUrl);
+      if (imageData.width !== 64 || imageData.height !== 64) return;
+      const version = detectFormat(imageData);
+      if (version === "none") {
+        detectedFeatures = null;
+        return;
+      }
+      const features = version === "v1" ? readFeatures(imageData) : readFeaturesV0(imageData);
+      if (!features) return;
+      detectedFeatures = features;
+      suppressPresetReset = true;
+      dlg.setFormValues({ ...featuresToForm(features), ears_enabled: true, data_format: version }, false);
+      suppressPresetReset = false;
+      dlg.last_preset = dlg.getFormResult().preset;
+      Blockbench.showQuickMessage(`Found Ears ${version} data in that skin \u2014 settings filled in`, 3e3);
+    } catch (e) {
+      console.error("[Ears] could not inspect the imported skin", e);
+    }
+  }
   function formToFeatures(form) {
     const f = defaultFeatures();
     f.enabled = form.ears_enabled;
@@ -1593,6 +1663,16 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       },
       onFormChange(form) {
         if (suppressPresetReset) return;
+        const file = form.texture_source === "file" ? form.texture_file : null;
+        const fileKey = file ? `${file.name || ""}:${file.content && file.content.byteLength || 0}` : null;
+        if (fileKey && fileKey !== lastInspectedFile) {
+          lastInspectedFile = fileKey;
+          inspectImportedSkin(file, this);
+        }
+        if (!fileKey) {
+          lastInspectedFile = null;
+          detectedFeatures = null;
+        }
         if (this.last_preset !== form.preset) {
           this.last_preset = form.preset;
           const preset = FEATURE_PRESETS[form.preset];
@@ -1600,6 +1680,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
             suppressPresetReset = true;
             this.setFormValues(featuresToForm({ ...defaultFeatures(), ...preset.features }), false);
             suppressPresetReset = false;
+            detectedFeatures = null;
           }
         }
       },
@@ -1611,7 +1692,10 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     return dialog;
   }
   function textureArgument(form) {
-    if (form.texture_source === "file" && form.texture_file) return form.texture_file;
+    if (form.texture_source === "file" && form.texture_file) {
+      const content = toDataURL(form.texture_file);
+      if (content) return { name: form.texture_file.name || "skin.png", content };
+    }
     if (form.texture_source === "blank") return false;
     return true;
   }
@@ -1630,9 +1714,10 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       new Texture({ name: "skin" }).fromDataURL(canvas.toDataURL("image/png")).add(false);
     }
     const features = form.ears_enabled ? formToFeatures(form) : null;
+    const unchanged = features && detectedFeatures && JSON.stringify(features) === JSON.stringify(detectedFeatures);
     whenTextureReady((texture) => {
       bindCubesToSkin(texture);
-      if (features) applyFeatures(features, Project.ears_data_format, texture);
+      if (features && !unchanged) applyFeatures(features, Project.ears_data_format, texture);
       Blockbench.dispatchEvent("ears_project_created", { project: Project });
     });
   }
@@ -1731,6 +1816,8 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
         ]
       },
       new() {
+        lastInspectedFile = null;
+        detectedFeatures = null;
         dialog.show();
         dialog.last_preset = void 0;
         return true;
@@ -1970,6 +2057,26 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
   function generatedMeshes() {
     return Mesh.all.filter((m) => m[GENERATED_KEY]);
   }
+  function generatedNames() {
+    const names = /* @__PURE__ */ new Set();
+    for (const label of Object.values(PART_LABELS)) names.add(`Ears ${label}`);
+    for (const label of Object.values(GROUP_LABELS)) if (label) names.add(`Ears ${label}`);
+    return names;
+  }
+  function adoptOrphans() {
+    const names = generatedNames();
+    let adopted = 0;
+    for (const mesh of Mesh.all) {
+      if (mesh[GENERATED_KEY]) continue;
+      if (!names.has(mesh.name)) continue;
+      const parentName = mesh.parent && mesh.parent.name ? String(mesh.parent.name).toLowerCase() : "";
+      const underBone = ["head", "body", "torso", "left arm", "right arm", "left leg", "right leg"].includes(parentName);
+      if (!underBone) continue;
+      mesh[GENERATED_KEY] = true;
+      adopted++;
+    }
+    return adopted;
+  }
   function clearGenerated() {
     const existing = generatedMeshes();
     for (const mesh of existing) mesh.remove();
@@ -2081,7 +2188,9 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     capeCanvas: null,
     alfalfa: { version: 1, data: {} },
     suspend: false,
-    refreshQueued: false
+    refreshQueued: false,
+    fingerprint: null,
+    pixelWaits: 0
   };
   var vm = {
     available: false,
@@ -2139,6 +2248,15 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     vm.available = true;
     const imageData = readImageData(texture);
     if (!imageData) return;
+    if (!hasAnyPixels(imageData)) {
+      if (state2.pixelWaits < 40) {
+        state2.pixelWaits++;
+        setTimeout(refresh, 50);
+        return;
+      }
+    } else {
+      state2.pixelWaits = 0;
+    }
     vm.format = detectFormat(imageData);
     if (vm.format === "v1") {
       const parsed = readFeatures(imageData);
@@ -2172,9 +2290,12 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       vm.hasCape,
       useMeshes
     ]);
-    const geometryChanged = fingerprint !== state2.fingerprint;
+    const firstPassForProject = state2.fingerprint === null;
+    let geometryChanged = fingerprint !== state2.fingerprint;
     state2.fingerprint = fingerprint;
     if (useMeshes) {
+      const adopted = adoptOrphans();
+      if (adopted && firstPassForProject) geometryChanged = false;
       const textureFor = (group) => {
         if (group === "skin") return texture;
         return getAuxTexture(group === "wing" ? WING_TEXTURE_NAME : CAPE_TEXTURE_NAME);
@@ -2258,6 +2379,22 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
         2e3
       );
     }
+  }
+  function exportSkinPng() {
+    const texture = getSkinTexture();
+    if (!texture) {
+      Blockbench.showQuickMessage("No 64x64 skin texture to export", 2e3);
+      return;
+    }
+    if (isLayered(texture)) texture.updateLayerChanges(true);
+    const name = (Project.name || "skin").replace(/\.(png|bbmodel)$/i, "") || "skin";
+    Blockbench.export({
+      type: "PNG",
+      extensions: ["png"],
+      name: `${name}.png`,
+      content: texture.getDataURL(),
+      savetype: "image"
+    });
   }
   function updateNotices() {
     const notices = [];
@@ -2711,6 +2848,15 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       registerFormat();
       patchSkinActions();
       buildPanel();
+      state2.exportAction = new Action("export_ears_skin", {
+        name: "Export Ears Skin",
+        description: "Save the skin as a single PNG, with the Ears data baked in",
+        icon: "pets",
+        category: "file",
+        condition: { formats: FORMATS },
+        click: () => exportSkinPng()
+      });
+      MenuBar.addAction(state2.exportAction, "file.export");
       on("select_project", queueRefresh);
       on("load_project", queueRefresh);
       on("new_project", queueRefresh);
@@ -2727,6 +2873,11 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       for (const [event, handler] of Object.entries(listeners)) Blockbench.removeListener(event, handler);
       unpatchSkinActions();
       unregisterFormat();
+      if (state2.exportAction) {
+        MenuBar.removeAction("file.export.export_ears_skin");
+        state2.exportAction.delete();
+        state2.exportAction = null;
+      }
       if (state2.preview) state2.preview.dispose();
       if (state2.panel) state2.panel.delete();
       if (state2.css && state2.css.delete) state2.css.delete();

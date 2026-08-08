@@ -32,6 +32,8 @@ const state = {
 	alfalfa: { version: 1, data: {} },
 	suspend: false,
 	refreshQueued: false,
+	fingerprint: null,
+	pixelWaits: 0,
 };
 
 const vm = {
@@ -100,6 +102,20 @@ function refresh() {
 	const imageData = Skin.readImageData(texture);
 	if (!imageData) return;
 
+	// Blockbench restores a texture's dimensions synchronously when a project is
+	// opened but paints its bitmap asynchronously. Reading it too early gives a
+	// blank canvas, which looks exactly like "this skin has no Ears data" -- and
+	// nothing would ever re-trigger the read. Wait for the pixels.
+	if (!Skin.hasAnyPixels(imageData)) {
+		if (state.pixelWaits < 40) {
+			state.pixelWaits++;
+			setTimeout(refresh, 50);
+			return;
+		}
+	} else {
+		state.pixelWaits = 0;
+	}
+
 	vm.format = Codec.detectFormat(imageData);
 	if (vm.format === 'v1') {
 		const parsed = Codec.readFeatures(imageData);
@@ -151,10 +167,18 @@ function refresh() {
 		vm.hasCape,
 		useMeshes,
 	]);
-	const geometryChanged = fingerprint !== state.fingerprint;
+	const firstPassForProject = state.fingerprint === null;
+	let geometryChanged = fingerprint !== state.fingerprint;
 	state.fingerprint = fingerprint;
 
 	if (useMeshes) {
+		// Geometry restored from a saved project comes back without our marker.
+		// Claim it, and on that first pass treat it as already built, so reopening
+		// a project keeps the geometry (and any hand edits) it was saved with
+		// rather than silently regenerating it.
+		const adopted = MeshBuilder.adoptOrphans();
+		if (adopted && firstPassForProject) geometryChanged = false;
+
 		// Everything that has a backing project texture becomes real geometry;
 		// the overlay only covers whatever's left over.
 		const textureFor = (group) => {
@@ -261,6 +285,31 @@ function rebuildGeometry() {
 			2000
 		);
 	}
+}
+
+/**
+ * Export the skin as a single PNG -- the thing you actually upload to Mojang.
+ *
+ * Everything Ears needs is already in this one image: the magic pixels in the
+ * 4x4 block, and the wing/cape PNGs in the alpha channel. So this is just the
+ * skin texture, flattened.
+ */
+function exportSkinPng() {
+	const texture = Skin.getSkinTexture();
+	if (!texture) {
+		Blockbench.showQuickMessage('No 64x64 skin texture to export', 2000);
+		return;
+	}
+	if (Skin.isLayered(texture)) texture.updateLayerChanges(true);
+
+	const name = (Project.name || 'skin').replace(/\.(png|bbmodel)$/i, '') || 'skin';
+	Blockbench.export({
+		type: 'PNG',
+		extensions: ['png'],
+		name: `${name}.png`,
+		content: texture.getDataURL(),
+		savetype: 'image',
+	});
 }
 
 function updateNotices() {
@@ -741,6 +790,16 @@ Plugin.register(PLUGIN_ID, {
 		Fmt.patchSkinActions();
 		buildPanel();
 
+		state.exportAction = new Action('export_ears_skin', {
+			name: 'Export Ears Skin',
+			description: 'Save the skin as a single PNG, with the Ears data baked in',
+			icon: 'pets',
+			category: 'file',
+			condition: { formats: FORMATS },
+			click: () => exportSkinPng(),
+		});
+		MenuBar.addAction(state.exportAction, 'file.export');
+
 		on('select_project', queueRefresh);
 		on('load_project', queueRefresh);
 		on('new_project', queueRefresh);
@@ -759,6 +818,11 @@ Plugin.register(PLUGIN_ID, {
 		for (const [event, handler] of Object.entries(listeners)) Blockbench.removeListener(event, handler);
 		Fmt.unpatchSkinActions();
 		Fmt.unregisterFormat();
+		if (state.exportAction) {
+			MenuBar.removeAction('file.export.export_ears_skin');
+			state.exportAction.delete();
+			state.exportAction = null;
+		}
 		if (state.preview) state.preview.dispose();
 		if (state.panel) state.panel.delete();
 		if (state.css && state.css.delete) state.css.delete();

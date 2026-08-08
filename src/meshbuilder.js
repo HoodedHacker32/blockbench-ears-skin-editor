@@ -37,6 +37,40 @@ export function generatedMeshes() {
 	return Mesh.all.filter((m) => m[GENERATED_KEY]);
 }
 
+/** The exact names buildMeshes produces, used to recognise our own work. */
+function generatedNames() {
+	const names = new Set();
+	for (const label of Object.values(PART_LABELS)) names.add(`Ears ${label}`);
+	for (const label of Object.values(GROUP_LABELS)) if (label) names.add(`Ears ${label}`);
+	return names;
+}
+
+/**
+ * Re-tag meshes we generated in an earlier session.
+ *
+ * `ears_generated` is a custom property, and Blockbench only serialises its own
+ * known fields -- so after saving and reopening a .bbmodel our meshes come back
+ * unmarked. Without this, clearGenerated() can't see them and every rebuild
+ * stacks another full set on top.
+ *
+ * Deliberately narrow: an exact name match, and it has to sit under a bone we'd
+ * have parented it to, so a mesh the user made and named themselves is safe.
+ */
+export function adoptOrphans() {
+	const names = generatedNames();
+	let adopted = 0;
+	for (const mesh of Mesh.all) {
+		if (mesh[GENERATED_KEY]) continue;
+		if (!names.has(mesh.name)) continue;
+		const parentName = mesh.parent && mesh.parent.name ? String(mesh.parent.name).toLowerCase() : '';
+		const underBone = ['head', 'body', 'torso', 'left arm', 'right arm', 'left leg', 'right leg'].includes(parentName);
+		if (!underBone) continue;
+		mesh[GENERATED_KEY] = true;
+		adopted++;
+	}
+	return adopted;
+}
+
 /** Remove previously generated Ears meshes without touching anything else. */
 export function clearGenerated() {
 	const existing = generatedMeshes();
