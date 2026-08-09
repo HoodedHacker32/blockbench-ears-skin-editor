@@ -978,6 +978,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     }
     return imageData;
   }
+  var Enums = { EAR_MODES, EAR_ANCHORS, TAIL_MODES, WING_MODES };
 
   // src/codec-v0.js
   var MAGIC_PIXELS = {
@@ -1170,18 +1171,40 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       return null;
     }
   }
+  function flattenTexture(texture) {
+    if (!texture || !isLayered(texture)) return false;
+    texture.updateLayerChanges(true);
+    Undo.initEdit({ textures: [texture], bitmap: true });
+    texture.layers_enabled = false;
+    texture.selected_layer = null;
+    texture.layers.empty();
+    texture.updateChangesAfterEdit();
+    Undo.finishEdit("Flatten texture for Ears data");
+    if (typeof UVEditor !== "undefined" && UVEditor.vue) UVEditor.vue.layer = null;
+    if (typeof updateInterfacePanels === "function") updateInterfacePanels();
+    if (typeof BARS !== "undefined" && BARS.updateConditions) BARS.updateConditions();
+    return true;
+  }
   function editTexture(texture, fn, undoName) {
     if (!texture) return false;
     if (isLayered(texture)) {
-      Blockbench.showMessageBox({
-        title: "Ears: flatten layers first",
-        message: "This texture has layers enabled. Ears data lives in specific pixels and in the alpha channel of large regions of the skin, so it has to be written to a flat image.\n\nUse Texture \u2192 Disable Texture Layers (which merges them down) and try again.",
-        buttons: ["Flatten now", "Cancel"],
-        confirm: 0,
-        cancel: 1
-      }, (result) => {
-        if (result === 0 && BarItems.disable_texture_layers) BarItems.disable_texture_layers.trigger();
-      });
+      Blockbench.showMessageBox(
+        {
+          title: "Ears: flatten layers first",
+          message: `"${texture.name}" has layers enabled. Ears data isn't artwork \u2014 it's exact pixel values in the 4\xD74 block at x 0-3, y 32-35 plus the alpha channel of large regions of the skin, and layer compositing cannot reproduce exact alpha. So it has to be written to a flat image.
+
+Flattening merges your layers down; nothing is lost, and it can be undone.`,
+          buttons: ["Flatten now", "Cancel"],
+          confirm: 0,
+          cancel: 1
+        },
+        (result) => {
+          if (result !== 0) return;
+          if (flattenTexture(texture)) {
+            Blockbench.showQuickMessage("Layers flattened \u2014 try that again", 2500);
+          }
+        }
+      );
       return false;
     }
     const imageData = readImageData(texture);
@@ -2214,6 +2237,147 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     return face;
   }
 
+  // src/validate.js
+  var MAGIC_BLUE = MAGIC_PIXELS.blue;
+  var BY_RGB2 = new Map(Object.entries(MAGIC_PIXELS).map(([name, rgb]) => [rgb, name]));
+  var ALLOWED_COLOURS = {
+    1: { label: "ear mode", colours: ["red", "blue", "green", "purple2", "cyan", "orange", "pink", "white", "gray", "purple"] },
+    2: { label: "ear anchor", colours: ["blue", "green", "red"] },
+    3: { label: "protrusions", colours: ["blue", "red", "green", "purple", "cyan"] },
+    4: { label: "tail mode", colours: ["red", "blue", "green", "purple", "orange", "pink", "purple2", "white", "gray"] },
+    8: { label: "wing mode", colours: ["blue", "red", "pink", "green", "cyan", "orange", "purple", "purple2"] },
+    9: { label: "wing animation", colours: ["blue", "red"] },
+    10: { label: "emissive", colours: ["blue", "orange"] }
+  };
+  var NUMERIC_SLOTS = {
+    6: { label: "snout", max: [7, 4, 8] },
+    7: { label: "chest / snout offset / cape", max: [128, 7, 16] }
+  };
+  function pixelAt(imageData, idx) {
+    const x = idx % 4;
+    const y = 32 + Math.floor(idx / 4);
+    const i = (y * imageData.width + x) * 4;
+    const d = imageData.data;
+    return { r: d[i], g: d[i + 1], b: d[i + 2], a: d[i + 3], rgb: d[i] << 16 | d[i + 1] << 8 | d[i + 2] };
+  }
+  function snapshotBlock(imageData) {
+    const out = new Uint8Array(16 * 4);
+    let p = 0;
+    for (let y = 32; y < 36; y++) {
+      for (let x = 0; x < 4; x++) {
+        const i = (y * imageData.width + x) * 4;
+        out[p++] = imageData.data[i];
+        out[p++] = imageData.data[i + 1];
+        out[p++] = imageData.data[i + 2];
+        out[p++] = imageData.data[i + 3];
+      }
+    }
+    return out;
+  }
+  function restoreBlock(imageData, snapshot) {
+    let p = 0;
+    for (let y = 32; y < 36; y++) {
+      for (let x = 0; x < 4; x++) {
+        const i = (y * imageData.width + x) * 4;
+        imageData.data[i] = snapshot[p++];
+        imageData.data[i + 1] = snapshot[p++];
+        imageData.data[i + 2] = snapshot[p++];
+        imageData.data[i + 3] = snapshot[p++];
+      }
+    }
+    return imageData;
+  }
+  function blocksEqual(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+  function validate(imageData) {
+    const version = detectFormat(imageData);
+    if (version === "none") return { ok: true, problems: [] };
+    return version === "v1" ? validateV1(imageData) : validateV0(imageData);
+  }
+  function validateV0(imageData) {
+    const problems = [];
+    for (const [idx, { label, colours }] of Object.entries(ALLOWED_COLOURS)) {
+      const px = pixelAt(imageData, Number(idx));
+      const name = BY_RGB2.get(px.rgb);
+      if (!name) {
+        problems.push(`the ${label} pixel is #${hex(px)}, which isn't one of the Ears magic colours`);
+      } else if (!colours.includes(name)) {
+        problems.push(`the ${label} pixel is Magic ${cap(name)}, which isn't a valid ${label}`);
+      }
+    }
+    for (const [idx, { label, max }] of Object.entries(NUMERIC_SLOTS)) {
+      const px = pixelAt(imageData, Number(idx));
+      if (px.rgb === MAGIC_BLUE) continue;
+      const channels = [px.r, px.g, px.b];
+      for (let c = 0; c < 3; c++) {
+        if (channels[c] > max[c]) {
+          problems.push(`the ${label} pixel has ${"RGB"[c]}=${channels[c]}, above the maximum of ${max[c]}`);
+          break;
+        }
+      }
+    }
+    const etc = pixelAt(imageData, 7);
+    if (etc.rgb !== MAGIC_BLUE && etc.b !== 0 && etc.b !== 16) {
+      problems.push(`the cape flag is ${etc.b}, but only 0 or 16 mean anything`);
+    }
+    return { ok: problems.length === 0, problems };
+  }
+  function validateV1(imageData) {
+    const problems = [];
+    const bytes = [];
+    for (let y = 0; y < 4; y++) {
+      for (let x = 0; x < 4; x++) {
+        if (x === 0 && y === 0) continue;
+        const i = ((32 + y) * imageData.width + x) * 4;
+        bytes.push(imageData.data[i], imageData.data[i + 1], imageData.data[i + 2]);
+      }
+    }
+    let bit = 8;
+    const read = (n) => {
+      let v = 0;
+      for (let i = 0; i < n; i++) {
+        const byte = bytes[bit / 8 | 0] || 0;
+        v = v << 1 | byte >> 7 - bit % 8 & 1;
+        bit++;
+      }
+      return v;
+    };
+    const ears = read(6);
+    if (ears > 0) {
+      const mode = Math.floor((ears - 1) / 3) + 1;
+      if (mode >= Enums.EAR_MODES.length) {
+        problems.push(`the ear mode value is ${mode}, but only 0-${Enums.EAR_MODES.length - 1} exist`);
+      }
+    }
+    read(1);
+    read(1);
+    const tail = read(3);
+    if (tail >= Enums.TAIL_MODES.length) {
+      problems.push(`the tail mode value is ${tail}, but only 0-${Enums.TAIL_MODES.length - 1} exist`);
+    }
+    if (tail !== 0) {
+      const segments = read(2) + 1;
+      read(7);
+      for (let i = 1; i < segments; i++) read(7);
+    }
+    if (read(3) > 0) {
+      read(2);
+      read(3);
+      read(3);
+    }
+    read(5);
+    const wing = read(3);
+    if (wing >= Enums.WING_MODES.length) {
+      problems.push(`the wing mode value is ${wing}, but only 0-${Enums.WING_MODES.length - 1} exist`);
+    }
+    return { ok: problems.length === 0, problems };
+  }
+  var hex = (px) => [px.r, px.g, px.b].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase();
+  var cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
   // src/index.js
   var PLUGIN_ID = "ears_skin_editor";
   var FORMATS = ["skin", FORMAT_ID];
@@ -2227,7 +2391,9 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     suspend: false,
     refreshQueued: false,
     fingerprint: null,
-    pixelWaits: 0
+    pixelWaits: 0,
+    magicSnapshot: null,
+    magicProject: null
   };
   var vm = {
     available: false,
@@ -2248,7 +2414,8 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     regionSummary: { count: 0, total: 0, empty: 0 },
     showRegions: false,
     paintable: false,
-    meshStats: null
+    meshStats: null,
+    layered: false
   };
   function isSkinProject() {
     return !!(Project && Format && FORMATS.includes(Format.id));
@@ -2294,6 +2461,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     } else {
       state2.pixelWaits = 0;
     }
+    if (!state2.suspend && !checkHandEdits(texture, imageData)) return;
     vm.format = detectFormat(imageData);
     if (vm.format === "v1") {
       const parsed = readFeatures(imageData);
@@ -2307,6 +2475,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     }
     vm.slim = detectSlim();
     vm.jacket = jacketVisible();
+    vm.layered = isLayered(texture);
     const { objects, alfalfa } = buildQuads(imageData, { slim: vm.slim, jacket: vm.jacket });
     state2.alfalfa = alfalfa;
     vm.hasWing = !!alfalfa.data.wing;
@@ -2351,6 +2520,38 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     syncAuxTextures();
     Canvas.updateView({ elements: [], selection: false });
   }
+  function checkHandEdits(texture, imageData) {
+    const block = snapshotBlock(imageData);
+    if (!state2.magicSnapshot || state2.magicProject !== Project.uuid) {
+      state2.magicSnapshot = block;
+      state2.magicProject = Project.uuid;
+      return true;
+    }
+    if (blocksEqual(block, state2.magicSnapshot)) return true;
+    const { ok, problems } = validate(imageData);
+    if (ok) {
+      state2.magicSnapshot = block;
+      return true;
+    }
+    const restore = state2.magicSnapshot;
+    state2.suspend = true;
+    const reverted = editTexture(
+      texture,
+      (data) => restoreBlock(data, restore),
+      "Revert invalid Ears data"
+    );
+    state2.suspend = false;
+    if (!reverted) {
+      state2.magicSnapshot = block;
+      return true;
+    }
+    Blockbench.showMessageBox({
+      title: "Ears data reverted",
+      message: "The Ears magic pixels were edited into something Ears can't read, so the change was undone:\n\n" + problems.map((p) => `\u2022 ${p}`).join("\n") + "\n\nThose pixels at x 0-3, y 32-35 are the Ears configuration. Use the Ears panel to change settings, or Undo to get your edit back."
+    });
+    queueRefresh();
+    return false;
+  }
   function queueRefresh() {
     if (state2.suspend || state2.refreshQueued) return;
     state2.refreshQueued = true;
@@ -2374,7 +2575,8 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       undoName
     );
     state2.suspend = false;
-    if (ok) refresh();
+    if (!ok) state2.fingerprint = null;
+    refresh();
   }
   function commitAlfalfa(undoName = "Edit Ears wing/cape data") {
     const texture = getSkinTexture();
@@ -2617,6 +2819,13 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
           stopEditingAux: (key) => stopEditingAux(key),
           fillRegions: (onlyEmpty) => fillRegions(onlyEmpty),
           rebuildGeometry: () => rebuildGeometry(),
+          flatten() {
+            const texture = getSkinTexture();
+            if (texture && flattenTexture(texture)) {
+              Blockbench.showQuickMessage("Layers flattened", 2e3);
+              refresh();
+            }
+          },
           openManipulator: () => Blockbench.openLink("https://ears.y2k.diy/manipulator/"),
           toggleEnabled() {
             vm.features.enabled = !vm.features.enabled;
@@ -2642,6 +2851,15 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
 							<span class="ears_badge" :title="'Magic pixel format found in this skin'">
 								{{ vm.format === 'none' ? 'no data' : vm.format }}
 							</span>
+						</div>
+
+						<div v-if="vm.layered" class="ears_notice ears_warn">
+							This texture has layers, so Ears settings can't be written \u2014 the data needs
+							exact pixel and alpha values, which layer compositing can't reproduce.
+							Reading and the 3D preview still work.
+							<div class="ears_row ears_buttons">
+								<button @click="flatten()">Flatten layers</button>
+							</div>
 						</div>
 
 						<div v-for="n in vm.notices" class="ears_notice">{{ n }}</div>
@@ -2828,7 +3046,19 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     });
   }
   var PANEL_CSS = `
-	.ears_panel { padding: 8px; font-size: 13px; }
+	/* Blockbench makes the panel wrapper a flex child with overflow hidden, so the
+	   settings simply got clipped when the panel was shorter than its content --
+	   which on a 1080p screen is always. min-height:0 is required as well, or a
+	   flex item refuses to shrink below its content and never scrolls. */
+	.ears_panel {
+		padding: 8px;
+		font-size: 13px;
+		flex-direction: column;
+		overflow-y: auto;
+		overflow-x: hidden;
+		min-height: 0;
+	}
+	.ears_panel > * { flex-shrink: 0; }
 	.ears_panel h4 { margin: 12px 0 4px; padding-bottom: 2px; border-bottom: 1px solid var(--color-border); color: var(--color-light); }
 	.ears_panel fieldset { border: none; margin: 0; padding: 0; min-width: 0; }
 	.ears_panel fieldset[disabled] { opacity: 0.45; pointer-events: none; }
@@ -2840,6 +3070,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
 	.ears_header { justify-content: space-between; border-bottom: 1px solid var(--color-border); padding-bottom: 6px; }
 	.ears_badge { background: var(--color-button); border-radius: 3px; padding: 1px 6px; font-size: 11px; color: var(--color-subtle_text); }
 	.ears_notice { background: var(--color-back); border-left: 3px solid var(--color-accent); padding: 5px 7px; margin: 6px 0; font-size: 12px; color: var(--color-subtle_text); }
+	.ears_warn { border-left-color: var(--color-warning, #e5a03c); }
 	.ears_buttons { gap: 4px; }
 	.ears_buttons button { flex: 1 1 auto; }
 	.ears_empty { padding: 16px; text-align: center; color: var(--color-subtle_text); }

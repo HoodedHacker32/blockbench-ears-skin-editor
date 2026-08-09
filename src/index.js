@@ -18,6 +18,7 @@ import * as Skin from './skin.js';
 import * as Regions from './regions.js';
 import * as Fmt from './format.js';
 import * as MeshBuilder from './meshbuilder.js';
+import * as Validate from './validate.js';
 import { EarsPreview } from './renderer.js';
 
 const PLUGIN_ID = 'ears_skin_editor';
@@ -34,6 +35,8 @@ const state = {
 	refreshQueued: false,
 	fingerprint: null,
 	pixelWaits: 0,
+	magicSnapshot: null,
+	magicProject: null,
 };
 
 const vm = {
@@ -55,6 +58,7 @@ const vm = {
 	showRegions: false,
 	paintable: false,
 	meshStats: null,
+	layered: false,
 };
 
 // --- reading / writing -----------------------------------------------------
@@ -116,6 +120,11 @@ function refresh() {
 		state.pixelWaits = 0;
 	}
 
+	// The magic pixels can be painted over like any others. A valid hand edit
+	// should just show up in the panel; an invalid one is almost always an
+	// accident, and Ears would silently reinterpret it as "off".
+	if (!state.suspend && !checkHandEdits(texture, imageData)) return;
+
 	vm.format = Codec.detectFormat(imageData);
 	if (vm.format === 'v1') {
 		const parsed = Codec.readFeatures(imageData);
@@ -130,6 +139,7 @@ function refresh() {
 
 	vm.slim = detectSlim();
 	vm.jacket = jacketVisible();
+	vm.layered = Skin.isLayered(texture);
 
 	const { objects, alfalfa } = Bridge.buildQuads(imageData, { slim: vm.slim, jacket: vm.jacket });
 	state.alfalfa = alfalfa;
@@ -202,6 +212,59 @@ function refresh() {
 	Canvas.updateView({ elements: [], selection: false });
 }
 
+/**
+ * Compare the magic block against the last known-good one.
+ *
+ * Returns false when the edit was reverted, meaning the caller should stop --
+ * the revert triggers its own refresh.
+ */
+function checkHandEdits(texture, imageData) {
+	const block = Validate.snapshotBlock(imageData);
+
+	// Nothing to compare against yet (new or newly-opened project): trust it.
+	if (!state.magicSnapshot || state.magicProject !== Project.uuid) {
+		state.magicSnapshot = block;
+		state.magicProject = Project.uuid;
+		return true;
+	}
+	if (Validate.blocksEqual(block, state.magicSnapshot)) return true;
+
+	const { ok, problems } = Validate.validate(imageData);
+	if (ok) {
+		// A legitimate hand edit -- adopt it and let the panel follow along.
+		state.magicSnapshot = block;
+		return true;
+	}
+
+	const restore = state.magicSnapshot;
+	state.suspend = true;
+	const reverted = Skin.editTexture(
+		texture,
+		(data) => Validate.restoreBlock(data, restore),
+		'Revert invalid Ears data'
+	);
+	state.suspend = false;
+
+	if (!reverted) {
+		// Couldn't write (layered texture, say) -- don't fight the user, just take
+		// the new state so we're not stuck warning on every refresh.
+		state.magicSnapshot = block;
+		return true;
+	}
+
+	Blockbench.showMessageBox({
+		title: 'Ears data reverted',
+		message:
+			"The Ears magic pixels were edited into something Ears can't read, so the change was " +
+			'undone:\n\n' +
+			problems.map((p) => `• ${p}`).join('\n') +
+			'\n\nThose pixels at x 0-3, y 32-35 are the Ears configuration. Use the Ears panel to ' +
+			'change settings, or Undo to get your edit back.',
+	});
+	queueRefresh();
+	return false;
+}
+
 function queueRefresh() {
 	if (state.suspend || state.refreshQueued) return;
 	state.refreshQueued = true;
@@ -228,7 +291,10 @@ function commit(undoName = 'Edit Ears settings') {
 		undoName
 	);
 	state.suspend = false;
-	if (ok) refresh();
+	// Refresh either way: if the write was refused (layered texture), the panel is
+	// showing a value the skin doesn't actually have, so re-read and snap back.
+	if (!ok) state.fingerprint = null;
+	refresh();
 }
 
 /** Push the current Alfalfa payload into the skin's alpha channel. */
@@ -510,6 +576,13 @@ function buildPanel() {
 				stopEditingAux: (key) => stopEditingAux(key),
 				fillRegions: (onlyEmpty) => fillRegions(onlyEmpty),
 				rebuildGeometry: () => rebuildGeometry(),
+				flatten() {
+					const texture = Skin.getSkinTexture();
+					if (texture && Skin.flattenTexture(texture)) {
+						Blockbench.showQuickMessage('Layers flattened', 2000);
+						refresh();
+					}
+				},
 				openManipulator: () => Blockbench.openLink('https://ears.y2k.diy/manipulator/'),
 				toggleEnabled() {
 					vm.features.enabled = !vm.features.enabled;
@@ -535,6 +608,15 @@ function buildPanel() {
 							<span class="ears_badge" :title="'Magic pixel format found in this skin'">
 								{{ vm.format === 'none' ? 'no data' : vm.format }}
 							</span>
+						</div>
+
+						<div v-if="vm.layered" class="ears_notice ears_warn">
+							This texture has layers, so Ears settings can't be written — the data needs
+							exact pixel and alpha values, which layer compositing can't reproduce.
+							Reading and the 3D preview still work.
+							<div class="ears_row ears_buttons">
+								<button @click="flatten()">Flatten layers</button>
+							</div>
 						</div>
 
 						<div v-for="n in vm.notices" class="ears_notice">{{ n }}</div>
@@ -722,7 +804,19 @@ function buildPanel() {
 }
 
 const PANEL_CSS = `
-	.ears_panel { padding: 8px; font-size: 13px; }
+	/* Blockbench makes the panel wrapper a flex child with overflow hidden, so the
+	   settings simply got clipped when the panel was shorter than its content --
+	   which on a 1080p screen is always. min-height:0 is required as well, or a
+	   flex item refuses to shrink below its content and never scrolls. */
+	.ears_panel {
+		padding: 8px;
+		font-size: 13px;
+		flex-direction: column;
+		overflow-y: auto;
+		overflow-x: hidden;
+		min-height: 0;
+	}
+	.ears_panel > * { flex-shrink: 0; }
 	.ears_panel h4 { margin: 12px 0 4px; padding-bottom: 2px; border-bottom: 1px solid var(--color-border); color: var(--color-light); }
 	.ears_panel fieldset { border: none; margin: 0; padding: 0; min-width: 0; }
 	.ears_panel fieldset[disabled] { opacity: 0.45; pointer-events: none; }
@@ -734,6 +828,7 @@ const PANEL_CSS = `
 	.ears_header { justify-content: space-between; border-bottom: 1px solid var(--color-border); padding-bottom: 6px; }
 	.ears_badge { background: var(--color-button); border-radius: 3px; padding: 1px 6px; font-size: 11px; color: var(--color-subtle_text); }
 	.ears_notice { background: var(--color-back); border-left: 3px solid var(--color-accent); padding: 5px 7px; margin: 6px 0; font-size: 12px; color: var(--color-subtle_text); }
+	.ears_warn { border-left-color: var(--color-warning, #e5a03c); }
 	.ears_buttons { gap: 4px; }
 	.ears_buttons button { flex: 1 1 auto; }
 	.ears_empty { padding: 16px; text-align: center; color: var(--color-subtle_text); }

@@ -69,21 +69,56 @@ export function readImageData(texture) {
  * Mutate a texture's pixels through Blockbench's undo system.
  * `fn` receives an ImageData it may modify in place.
  */
+/**
+ * Flatten a texture's layers into its own bitmap.
+ *
+ * Blockbench's own "Disable Texture Layers" action works on `Texture.selected`,
+ * so it silently does nothing when some other texture (the wing, say) is
+ * selected -- which is why flattening only worked sometimes. This targets the
+ * texture explicitly.
+ */
+export function flattenTexture(texture) {
+	if (!texture || !isLayered(texture)) return false;
+	// Composite the layers down into the texture's own canvas and source first,
+	// otherwise emptying the layer list would throw the artwork away.
+	texture.updateLayerChanges(true);
+
+	Undo.initEdit({ textures: [texture], bitmap: true });
+	texture.layers_enabled = false;
+	texture.selected_layer = null;
+	texture.layers.empty();
+	texture.updateChangesAfterEdit();
+	Undo.finishEdit('Flatten texture for Ears data');
+
+	if (typeof UVEditor !== 'undefined' && UVEditor.vue) UVEditor.vue.layer = null;
+	if (typeof updateInterfacePanels === 'function') updateInterfacePanels();
+	if (typeof BARS !== 'undefined' && BARS.updateConditions) BARS.updateConditions();
+	return true;
+}
+
 export function editTexture(texture, fn, undoName) {
 	if (!texture) return false;
 	if (isLayered(texture)) {
-		Blockbench.showMessageBox({
-			title: 'Ears: flatten layers first',
-			message:
-				'This texture has layers enabled. Ears data lives in specific pixels and in the ' +
-				'alpha channel of large regions of the skin, so it has to be written to a flat ' +
-				'image.\n\nUse Texture → Disable Texture Layers (which merges them down) and try again.',
-			buttons: ['Flatten now', 'Cancel'],
-			confirm: 0,
-			cancel: 1,
-		}, (result) => {
-			if (result === 0 && BarItems.disable_texture_layers) BarItems.disable_texture_layers.trigger();
-		});
+		Blockbench.showMessageBox(
+			{
+				title: 'Ears: flatten layers first',
+				message:
+					`"${texture.name}" has layers enabled. Ears data isn't artwork — it's exact pixel ` +
+					'values in the 4×4 block at x 0-3, y 32-35 plus the alpha channel of large regions ' +
+					'of the skin, and layer compositing cannot reproduce exact alpha. So it has to be ' +
+					'written to a flat image.\n\n' +
+					'Flattening merges your layers down; nothing is lost, and it can be undone.',
+				buttons: ['Flatten now', 'Cancel'],
+				confirm: 0,
+				cancel: 1,
+			},
+			(result) => {
+				if (result !== 0) return;
+				if (flattenTexture(texture)) {
+					Blockbench.showQuickMessage('Layers flattened — try that again', 2500);
+				}
+			}
+		);
 		return false;
 	}
 

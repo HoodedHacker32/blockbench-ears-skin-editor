@@ -78,8 +78,16 @@ anything to show up in game. There is no config file.
   The "Texture regions" section of the panel tells you every rect in use, and can fill them for you.
 - **Wings need a wing image.** Setting a wing mode without importing a 20x16 wing PNG does nothing;
   Ears itself disables wings in that case. The panel warns you.
-- **Flatten texture layers first.** Ears data lives in specific pixels and in the alpha channel of large
-  regions, so it has to be written to a flat image. If layers are enabled the plugin offers to flatten.
+- **Texture layers need flattening before settings can be changed.** Ears data isn't artwork — it's
+  exact pixel values plus exact alpha across large regions, and layer compositing can't reproduce
+  either. Reading and the 3D preview work fine with layers on; only writing is blocked, and the panel
+  has a one-click **Flatten layers** button. (Blockbench's own "Disable Texture Layers" acts on
+  whichever texture happens to be *selected*, which is why flattening from there only works sometimes —
+  this targets the skin explicitly.)
+- **You can edit the magic pixels by hand.** Paint a valid value and it just shows up in the panel.
+  Paint something Ears can't read and the change is reverted with a note saying which pixel was wrong
+  and why — otherwise Ears would silently reinterpret it as "off" and the skin would quietly stop
+  working in game.
 - **Emissive** marks the palette in `(52,32)-(56,36)` as glowing. The preview renders those quads
   unlit rather than simulating the in-game bloom.
 - **The Ears meshes are yours to break.** They're ordinary elements, so moving or deleting them is
