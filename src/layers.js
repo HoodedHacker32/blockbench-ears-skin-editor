@@ -22,30 +22,17 @@
 export const DATA_LAYER = 'Ears Data';
 export const MASK_LAYER = 'Ears Alfalfa';
 
-/** Alfalfa.ENCODE_REGIONS -- the areas whose alpha carries the wing/cape data. */
-const ENCODE_REGIONS = [
-	[8, 0, 24, 8],
-	[0, 8, 8, 16],
-	[16, 8, 32, 16],
-	[4, 16, 12, 20],
-	[20, 16, 36, 20],
-	[44, 16, 52, 20],
-	[0, 20, 56, 32],
-	[20, 48, 28, 52],
-	[36, 48, 44, 52],
-	[16, 52, 48, 64],
-];
-
-/** Every pixel index (x + y*64) whose exact value Ears depends on. */
+/**
+ * Every pixel whose exact value we have to control while editing.
+ *
+ * Only the 4x4 magic block. Alfalfa is no longer written into the working
+ * texture at all -- it's applied to a copy at export time -- so the alpha of the
+ * encode regions is the artist's to do as they like.
+ */
 function controlledMask(width, height) {
 	const set = new Uint8Array(width * height);
 	for (let y = 32; y < 36; y++) {
 		for (let x = 0; x < 4; x++) set[y * width + x] = 1;
-	}
-	for (const [x1, y1, x2, y2] of ENCODE_REGIONS) {
-		for (let y = y1; y < y2; y++) {
-			for (let x = x1; x < x2; x++) set[y * width + x] = 1;
-		}
 	}
 	return set;
 }

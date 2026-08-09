@@ -40,6 +40,45 @@ export function getAuxTexture(role) {
 	return null;
 }
 
+/** Alfalfa.ENCODE_REGIONS -- the areas whose alpha can carry wing/cape data. */
+export const ENCODE_REGIONS = [
+	[8, 0, 24, 8],
+	[0, 8, 8, 16],
+	[16, 8, 32, 16],
+	[4, 16, 12, 20],
+	[20, 16, 36, 20],
+	[44, 16, 52, 20],
+	[0, 20, 56, 32],
+	[20, 48, 28, 52],
+	[36, 48, 44, 52],
+	[16, 52, 48, 64],
+];
+
+/**
+ * Undo Alfalfa's alpha encoding so the working texture looks like a normal skin.
+ *
+ * Ears never stores a data pixel below 50% opacity (the high bit is always set),
+ * and the game forces these regions opaque anyway -- so anything at 128..254 is
+ * payload, and its "real" appearance is fully opaque. Genuinely transparent
+ * pixels are left alone.
+ */
+export function stripAlfalfaAlpha(imageData) {
+	let cleaned = 0;
+	for (const [x1, y1, x2, y2] of ENCODE_REGIONS) {
+		for (let y = y1; y < y2; y++) {
+			for (let x = x1; x < x2; x++) {
+				const i = (y * imageData.width + x) * 4 + 3;
+				const a = imageData.data[i];
+				if (a >= 128 && a !== 255) {
+					imageData.data[i] = 255;
+					cleaned++;
+				}
+			}
+		}
+	}
+	return cleaned;
+}
+
 /** True if any pixel is drawn. A texture restored from a project file reports its
  *  size immediately but paints its bitmap asynchronously, so this is how we tell
  *  "genuinely blank" from "not decoded yet". */

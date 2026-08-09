@@ -38,6 +38,9 @@ const state = {
 	pixelWaits: 0,
 	magicSnapshot: null,
 	magicProject: null,
+	alfalfaProject: null,
+	needsStrip: false,
+	stripAttempts: 0,
 };
 
 const vm = {
@@ -87,6 +90,75 @@ function jacketVisible() {
 	return true;
 }
 
+function hasPayload(alfalfa) {
+	return !!(alfalfa && alfalfa.data && Object.keys(alfalfa.data).some((k) => alfalfa.data[k] && alfalfa.data[k].length));
+}
+
+/**
+ * The skin as Ears needs to see it: the working image plus the Alfalfa payload
+ * encoded into its alpha. Always operates on a copy -- the working texture is
+ * never touched.
+ */
+function composeForEars(imageData) {
+	if (!hasPayload(state.alfalfa)) return imageData;
+	const copy = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+	return Bridge.writeAlfalfa(copy, state.alfalfa);
+}
+
+/**
+ * Take Alfalfa out of an imported skin's alpha, now that we hold it separately.
+ *
+ * A freshly created texture is still loading its image in the background, and
+ * when that finishes Blockbench repaints the canvas from the original data URL --
+ * wiping this write. So rather than racing it, the strip is retried until the
+ * alpha actually stays clean.
+ */
+function stripAlfalfaIfNeeded(texture, imageData) {
+	if (!state.needsStrip) return false;
+
+	// Nothing left to strip: we're done.
+	const probe = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+	if (Skin.stripAlfalfaAlpha(probe) === 0) {
+		state.needsStrip = false;
+		state.stripAttempts = 0;
+		return false;
+	}
+	if (state.stripAttempts > 20) {
+		// Give up rather than spin; the data is safe either way, the working
+		// texture just keeps its original alpha.
+		state.needsStrip = false;
+		return false;
+	}
+	state.stripAttempts++;
+
+	// Wait for the image to finish loading, or the write will just be undone.
+	if (texture.img && texture.img.complete === false) {
+		setTimeout(refresh, 80);
+		return true;
+	}
+
+	state.suspend = true;
+	let cleaned = 0;
+	Skin.editTexture(
+		texture,
+		(data) => {
+			cleaned = Skin.stripAlfalfaAlpha(data);
+		},
+		'Extract embedded Ears wing/cape data'
+	);
+	state.suspend = false;
+
+	if (cleaned && state.stripAttempts === 1) {
+		Blockbench.showQuickMessage(
+			"Wing/cape data lifted out of the skin's alpha — re-applied on export",
+			4000
+		);
+	}
+	state.fingerprint = null;
+	setTimeout(refresh, 60);
+	return true;
+}
+
 /** Re-read the skin and rebuild both the panel state and the 3D preview. */
 function refresh() {
 	state.refreshQueued = false;
@@ -103,6 +175,20 @@ function refresh() {
 		return;
 	}
 	vm.available = true;
+
+	// The wing/cape payload is per project. Without this, opening a second skin
+	// would inherit the first one's wing, skip the adopt-and-strip of its own
+	// embedded data, and end up with neither.
+	if (state.alfalfaProject !== Project.uuid) {
+		state.alfalfa = { version: 1, data: {} };
+		state.alfalfaProject = Project.uuid;
+		state.needsStrip = false;
+		state.stripAttempts = 0;
+		// A skin imported through the setup dialog has already had its wing/cape
+		// lifted out for us, along with a cleaned texture.
+		const handed = Fmt.takePendingAlfalfa();
+		if (handed) state.alfalfa = handed;
+	}
 
 	const imageData = Skin.readImageData(texture);
 	if (!imageData) return;
@@ -147,10 +233,25 @@ function refresh() {
 		texture.updateLayerChanges(true);
 	}
 
-	const { objects, alfalfa } = Bridge.buildQuads(imageData, { slim: vm.slim, jacket: vm.jacket });
-	state.alfalfa = alfalfa;
-	vm.hasWing = !!alfalfa.data.wing;
-	vm.hasCape = !!alfalfa.data.cape;
+	// Alfalfa is NOT kept in the working texture. It rewrites the alpha of large
+	// regions of the skin, which makes parts of it look half transparent while
+	// you're drawing, and worse, painting in those regions would destroy the
+	// embedded wing. Instead the payload is held separately and applied to a copy,
+	// both for the preview here and at export.
+	const previewImage = composeForEars(imageData);
+	const { objects, alfalfa } = Bridge.buildQuads(previewImage, { slim: vm.slim, jacket: vm.jacket });
+
+	// A skin opened from disk may still carry Alfalfa in its alpha. Adopt it once,
+	// then clean the working texture so the artist sees a normal skin.
+	if (!hasPayload(state.alfalfa) && hasPayload(alfalfa)) {
+		state.alfalfa = alfalfa;
+		state.needsStrip = true;
+		state.stripAttempts = 0;
+	}
+	if (stripAlfalfaIfNeeded(texture, imageData)) return;
+
+	vm.hasWing = !!state.alfalfa.data.wing;
+	vm.hasCape = !!state.alfalfa.data.cape;
 	vm.commonVersion = Bridge.commonVersion() || '';
 
 	state.skinCanvas = Skin.cloneToCanvas(texture, state.skinCanvas);
@@ -214,7 +315,7 @@ function refresh() {
 	vm.regionSummary = Regions.summarise(state.regions, imageData);
 
 	updateNotices();
-	syncAuxTextures();
+	syncAuxTextures().catch((e) => console.error('[Ears] syncAuxTextures failed', e));
 	Canvas.updateView({ elements: [], selection: false });
 }
 
@@ -303,19 +404,17 @@ function commit(undoName = 'Edit Ears settings') {
 	refresh();
 }
 
-/** Push the current Alfalfa payload into the skin's alpha channel. */
-function commitAlfalfa(undoName = 'Edit Ears wing/cape data') {
-	const texture = Skin.getSkinTexture();
-	if (!texture) return;
-
-	state.suspend = true;
-	const ok = Skin.editTexture(
-		texture,
-		(imageData) => Bridge.writeAlfalfa(imageData, state.alfalfa),
-		undoName
-	);
-	state.suspend = false;
-	if (ok) refresh();
+/**
+ * Record a change to the wing/cape payload.
+ *
+ * Nothing is written to the skin here -- the payload only meets the alpha channel
+ * at export. That keeps the working texture looking like a normal skin, and means
+ * painting over the encode regions can't corrupt an embedded wing.
+ */
+function commitAlfalfa() {
+	state.alfalfa.version = state.alfalfa.version || 1;
+	state.fingerprint = null;
+	refresh();
 }
 
 /**
@@ -374,12 +473,23 @@ function exportSkinPng() {
 	}
 	if (Skin.isLayered(texture)) texture.updateLayerChanges(true);
 
+	// This is the one moment the wing/cape payload is baked into the alpha
+	// channel, so the exported PNG is a complete Ears skin while the project you
+	// keep editing stays clean.
+	const working = Skin.readImageData(texture);
+	if (!working) {
+		Blockbench.showQuickMessage('Could not read the skin texture', 2000);
+		return;
+	}
+	const composed = composeForEars(working);
+	const canvas = Skin.imageDataToCanvas(composed);
+
 	const name = (Project.name || 'skin').replace(/\.(png|bbmodel)$/i, '') || 'skin';
 	Blockbench.export({
 		type: 'PNG',
 		extensions: ['png'],
 		name: `${name}.png`,
-		content: texture.getDataURL(),
+		content: canvas.toDataURL('image/png'),
 		savetype: 'image',
 	});
 }
@@ -420,8 +530,27 @@ const AUX_ROLES = {
  */
 async function syncAuxTextures() {
 	let added = false;
+	let recovered = false;
 	for (const [key, { role, label }] of Object.entries(AUX_ROLES)) {
-		const bytes = state.alfalfa.data[key];
+		let bytes = state.alfalfa.data[key];
+
+		// The payload lives in memory, but the wing/cape textures are saved in the
+		// project file. After reopening a .bbmodel the texture is back and the
+		// payload isn't, so rebuild it from the texture rather than losing the wing.
+		if (!bytes) {
+			const surviving = Skin.getAuxTexture(role);
+			if (surviving) {
+				try {
+					bytes = await Skin.encodePng(Skin.cloneToCanvas(surviving));
+					state.alfalfa.version = state.alfalfa.version || 1;
+					state.alfalfa.data[key] = bytes;
+					recovered = true;
+				} catch (e) {
+					console.error(`[Ears] could not re-encode the surviving ${key} texture`, e);
+				}
+			}
+		}
+
 		if (!bytes) {
 			state.preview.setTexture(key, null);
 			state.preview.setTexture(`emissive_${key}`, null);
@@ -453,8 +582,8 @@ async function syncAuxTextures() {
 
 	// Decoding a PNG is async, so the textures only land after the geometry pass
 	// has already run. If that pass had nothing to map the wing against, redo it
-	// now that it does. Guarded by `added` so this can't loop.
-	if (added) {
+	// now that it does. Guarded so this can't loop.
+	if (added || recovered) {
 		state.fingerprint = null;
 		queueRefresh();
 	}

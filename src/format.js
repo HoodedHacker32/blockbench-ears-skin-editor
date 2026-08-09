@@ -18,7 +18,22 @@
 import * as Codec from './codec.js';
 import * as CodecV0 from './codec-v0.js';
 import { getModel, MODELS, FEATURE_PRESETS } from './presets.js';
-import { bindCubesToSkin } from './skin.js';
+import { bindCubesToSkin, stripAlfalfaAlpha, imageDataToCanvas } from './skin.js';
+import * as Bridge from './bridge.js';
+
+/**
+ * Wing/cape data found in an imported skin, handed to the panel once the project
+ * exists. Extracted here rather than reactively after the fact: a freshly created
+ * texture reloads itself from its own data URL in the background, so any attempt
+ * to rewrite its pixels immediately afterwards is liable to be undone.
+ */
+let pendingAlfalfa = null;
+
+export function takePendingAlfalfa() {
+	const value = pendingAlfalfa;
+	pendingAlfalfa = null;
+	return value;
+}
 
 export const FORMAT_ID = 'ears_skin';
 
@@ -137,6 +152,28 @@ async function inspectImportedSkin(file, dlg) {
 				3500
 			);
 			return;
+		}
+
+		// Lift any embedded wing/cape out of the alpha channel now, and hand the
+		// project a skin that's already clean. The payload is re-applied on export.
+		// Cleared first: a skin with no wing must not inherit the previous one's.
+		pendingAlfalfa = null;
+		try {
+			const found = Bridge.buildQuads(imageData, {}).alfalfa;
+			const entries = Object.keys(found.data || {}).filter((k) => found.data[k] && found.data[k].length);
+			if (entries.length) {
+				const cleaned = new ImageData(
+					new Uint8ClampedArray(imageData.data),
+					imageData.width,
+					imageData.height
+				);
+				if (stripAlfalfaAlpha(cleaned) > 0) {
+					importedSkin = { name: file.name, dataUrl: imageDataToCanvas(cleaned).toDataURL('image/png') };
+				}
+				pendingAlfalfa = found;
+			}
+		} catch (e) {
+			console.error('[Ears] could not extract embedded wing/cape data', e);
 		}
 
 		const version = Codec.detectFormat(imageData);
@@ -290,6 +327,7 @@ function buildDialog() {
 				lastInspectedFile = null;
 				detectedFeatures = null;
 				importedSkin = null;
+				pendingAlfalfa = null;
 			}
 
 			// Picking a preset fills in the rest of the form.
@@ -371,7 +409,16 @@ function createProject(form) {
 
 	whenTextureReady((texture) => {
 		bindCubesToSkin(texture);
-		if (features && !unchanged) applyFeatures(features, Project.ears_data_format, texture);
+		if (features && !unchanged) {
+			applyFeatures(features, Project.ears_data_format, texture);
+		} else {
+			// applyFeatures is what normally kicks the panel into rebuilding once
+			// the bitmap exists. When the imported skin already says what we want
+			// and we deliberately don't rewrite it, something still has to say
+			// "the texture is ready now" -- otherwise the project opens with no
+			// Ears geometry at all.
+			Blockbench.dispatchEvent('edit_texture', { texture });
+		}
 		Blockbench.dispatchEvent('ears_project_created', { project: Project });
 	});
 }
@@ -500,6 +547,7 @@ export function registerFormat() {
 			lastInspectedFile = null;
 			detectedFeatures = null;
 			importedSkin = null;
+			pendingAlfalfa = null;
 			dialog.show();
 			// Re-apply the current preset so the form is consistent on reopen.
 			dialog.last_preset = undefined;

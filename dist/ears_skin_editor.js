@@ -1131,27 +1131,10 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
   // src/layers.js
   var DATA_LAYER = "Ears Data";
   var MASK_LAYER = "Ears Alfalfa";
-  var ENCODE_REGIONS = [
-    [8, 0, 24, 8],
-    [0, 8, 8, 16],
-    [16, 8, 32, 16],
-    [4, 16, 12, 20],
-    [20, 16, 36, 20],
-    [44, 16, 52, 20],
-    [0, 20, 56, 32],
-    [20, 48, 28, 52],
-    [36, 48, 44, 52],
-    [16, 52, 48, 64]
-  ];
   function controlledMask(width, height) {
     const set = new Uint8Array(width * height);
     for (let y = 32; y < 36; y++) {
       for (let x = 0; x < 4; x++) set[y * width + x] = 1;
-    }
-    for (const [x1, y1, x2, y2] of ENCODE_REGIONS) {
-      for (let y = y1; y < y2; y++) {
-        for (let x = x1; x < x2; x++) set[y * width + x] = 1;
-      }
     }
     return set;
   }
@@ -1277,6 +1260,34 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     }
     return null;
   }
+  var ENCODE_REGIONS = [
+    [8, 0, 24, 8],
+    [0, 8, 8, 16],
+    [16, 8, 32, 16],
+    [4, 16, 12, 20],
+    [20, 16, 36, 20],
+    [44, 16, 52, 20],
+    [0, 20, 56, 32],
+    [20, 48, 28, 52],
+    [36, 48, 44, 52],
+    [16, 52, 48, 64]
+  ];
+  function stripAlfalfaAlpha(imageData) {
+    let cleaned = 0;
+    for (const [x1, y1, x2, y2] of ENCODE_REGIONS) {
+      for (let y = y1; y < y2; y++) {
+        for (let x = x1; x < x2; x++) {
+          const i = (y * imageData.width + x) * 4 + 3;
+          const a = imageData.data[i];
+          if (a >= 128 && a !== 255) {
+            imageData.data[i] = 255;
+            cleaned++;
+          }
+        }
+      }
+    }
+    return cleaned;
+  }
   function hasAnyPixels(imageData) {
     if (!imageData) return false;
     const d = imageData.data;
@@ -1354,6 +1365,13 @@ Move those layers back to the top, or flatten the texture.`,
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(texture.canvas || texture.img, 0, 0);
+    return canvas;
+  }
+  function imageDataToCanvas(imageData, existing) {
+    const canvas = existing || document.createElement("canvas");
+    canvas.width = imageData.width;
+    canvas.height = imageData.height;
+    canvas.getContext("2d").putImageData(imageData, 0, 0);
     return canvas;
   }
   function decodePng(bytes) {
@@ -1636,6 +1654,12 @@ Move those layers back to the top, or flatten the texture.`,
   };
 
   // src/format.js
+  var pendingAlfalfa = null;
+  function takePendingAlfalfa() {
+    const value = pendingAlfalfa;
+    pendingAlfalfa = null;
+    return value;
+  }
   var FORMAT_ID = "ears_skin";
   var SKIN_ACTIONS = [
     "toggle_skin_layer",
@@ -1723,6 +1747,24 @@ Move those layers back to the top, or flatten the texture.`,
           3500
         );
         return;
+      }
+      pendingAlfalfa = null;
+      try {
+        const found = buildQuads(imageData, {}).alfalfa;
+        const entries = Object.keys(found.data || {}).filter((k) => found.data[k] && found.data[k].length);
+        if (entries.length) {
+          const cleaned = new ImageData(
+            new Uint8ClampedArray(imageData.data),
+            imageData.width,
+            imageData.height
+          );
+          if (stripAlfalfaAlpha(cleaned) > 0) {
+            importedSkin = { name: file.name, dataUrl: imageDataToCanvas(cleaned).toDataURL("image/png") };
+          }
+          pendingAlfalfa = found;
+        }
+      } catch (e) {
+        console.error("[Ears] could not extract embedded wing/cape data", e);
       }
       const version = detectFormat(imageData);
       if (version === "none") {
@@ -1854,6 +1896,7 @@ Move those layers back to the top, or flatten the texture.`,
           lastInspectedFile = null;
           detectedFeatures = null;
           importedSkin = null;
+          pendingAlfalfa = null;
         }
         if (this.last_preset !== form.preset) {
           this.last_preset = form.preset;
@@ -1905,7 +1948,11 @@ Move those layers back to the top, or flatten the texture.`,
     const unchanged = features && detectedFeatures && JSON.stringify(features) === JSON.stringify(detectedFeatures);
     whenTextureReady((texture) => {
       bindCubesToSkin(texture);
-      if (features && !unchanged) applyFeatures(features, Project.ears_data_format, texture);
+      if (features && !unchanged) {
+        applyFeatures(features, Project.ears_data_format, texture);
+      } else {
+        Blockbench.dispatchEvent("edit_texture", { texture });
+      }
       Blockbench.dispatchEvent("ears_project_created", { project: Project });
     });
   }
@@ -2007,6 +2054,7 @@ Move those layers back to the top, or flatten the texture.`,
         lastInspectedFile = null;
         detectedFeatures = null;
         importedSkin = null;
+        pendingAlfalfa = null;
         dialog.show();
         dialog.last_preset = void 0;
         return true;
@@ -2522,7 +2570,10 @@ Move those layers back to the top, or flatten the texture.`,
     fingerprint: null,
     pixelWaits: 0,
     magicSnapshot: null,
-    magicProject: null
+    magicProject: null,
+    alfalfaProject: null,
+    needsStrip: false,
+    stripAttempts: 0
   };
   var vm = {
     available: false,
@@ -2565,6 +2616,51 @@ Move those layers back to the top, or flatten the texture.`,
     }
     return true;
   }
+  function hasPayload(alfalfa) {
+    return !!(alfalfa && alfalfa.data && Object.keys(alfalfa.data).some((k) => alfalfa.data[k] && alfalfa.data[k].length));
+  }
+  function composeForEars(imageData) {
+    if (!hasPayload(state2.alfalfa)) return imageData;
+    const copy = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+    return writeAlfalfa(copy, state2.alfalfa);
+  }
+  function stripAlfalfaIfNeeded(texture, imageData) {
+    if (!state2.needsStrip) return false;
+    const probe = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+    if (stripAlfalfaAlpha(probe) === 0) {
+      state2.needsStrip = false;
+      state2.stripAttempts = 0;
+      return false;
+    }
+    if (state2.stripAttempts > 20) {
+      state2.needsStrip = false;
+      return false;
+    }
+    state2.stripAttempts++;
+    if (texture.img && texture.img.complete === false) {
+      setTimeout(refresh, 80);
+      return true;
+    }
+    state2.suspend = true;
+    let cleaned = 0;
+    editTexture(
+      texture,
+      (data) => {
+        cleaned = stripAlfalfaAlpha(data);
+      },
+      "Extract embedded Ears wing/cape data"
+    );
+    state2.suspend = false;
+    if (cleaned && state2.stripAttempts === 1) {
+      Blockbench.showQuickMessage(
+        "Wing/cape data lifted out of the skin's alpha \u2014 re-applied on export",
+        4e3
+      );
+    }
+    state2.fingerprint = null;
+    setTimeout(refresh, 60);
+    return true;
+  }
   function refresh() {
     state2.refreshQueued = false;
     if (!isSkinProject()) {
@@ -2579,6 +2675,14 @@ Move those layers back to the top, or flatten the texture.`,
       return;
     }
     vm.available = true;
+    if (state2.alfalfaProject !== Project.uuid) {
+      state2.alfalfa = { version: 1, data: {} };
+      state2.alfalfaProject = Project.uuid;
+      state2.needsStrip = false;
+      state2.stripAttempts = 0;
+      const handed = takePendingAlfalfa();
+      if (handed) state2.alfalfa = handed;
+    }
     const imageData = readImageData(texture);
     if (!imageData) return;
     if (!hasAnyPixels(imageData)) {
@@ -2608,10 +2712,16 @@ Move those layers back to the top, or flatten the texture.`,
     if (vm.layered && !state2.suspend && raiseManagedLayers(texture)) {
       texture.updateLayerChanges(true);
     }
-    const { objects, alfalfa } = buildQuads(imageData, { slim: vm.slim, jacket: vm.jacket });
-    state2.alfalfa = alfalfa;
-    vm.hasWing = !!alfalfa.data.wing;
-    vm.hasCape = !!alfalfa.data.cape;
+    const previewImage = composeForEars(imageData);
+    const { objects, alfalfa } = buildQuads(previewImage, { slim: vm.slim, jacket: vm.jacket });
+    if (!hasPayload(state2.alfalfa) && hasPayload(alfalfa)) {
+      state2.alfalfa = alfalfa;
+      state2.needsStrip = true;
+      state2.stripAttempts = 0;
+    }
+    if (stripAlfalfaIfNeeded(texture, imageData)) return;
+    vm.hasWing = !!state2.alfalfa.data.wing;
+    vm.hasCape = !!state2.alfalfa.data.cape;
     vm.commonVersion = commonVersion() || "";
     state2.skinCanvas = cloneToCanvas(texture, state2.skinCanvas);
     state2.preview.setTexture("skin", state2.skinCanvas);
@@ -2649,7 +2759,7 @@ Move those layers back to the top, or flatten the texture.`,
     vm.regions = state2.regions.filter((r) => r.texture === "skin");
     vm.regionSummary = summarise(state2.regions, imageData);
     updateNotices();
-    syncAuxTextures();
+    syncAuxTextures().catch((e) => console.error("[Ears] syncAuxTextures failed", e));
     Canvas.updateView({ elements: [], selection: false });
   }
   function checkHandEdits(texture, imageData) {
@@ -2710,17 +2820,10 @@ Move those layers back to the top, or flatten the texture.`,
     if (!ok) state2.fingerprint = null;
     refresh();
   }
-  function commitAlfalfa(undoName = "Edit Ears wing/cape data") {
-    const texture = getSkinTexture();
-    if (!texture) return;
-    state2.suspend = true;
-    const ok = editTexture(
-      texture,
-      (imageData) => writeAlfalfa(imageData, state2.alfalfa),
-      undoName
-    );
-    state2.suspend = false;
-    if (ok) refresh();
+  function commitAlfalfa() {
+    state2.alfalfa.version = state2.alfalfa.version || 1;
+    state2.fingerprint = null;
+    refresh();
   }
   function fillRegions(onlyEmpty) {
     const texture = getSkinTexture();
@@ -2758,12 +2861,19 @@ Move those layers back to the top, or flatten the texture.`,
       return;
     }
     if (isLayered(texture)) texture.updateLayerChanges(true);
+    const working = readImageData(texture);
+    if (!working) {
+      Blockbench.showQuickMessage("Could not read the skin texture", 2e3);
+      return;
+    }
+    const composed = composeForEars(working);
+    const canvas = imageDataToCanvas(composed);
     const name = (Project.name || "skin").replace(/\.(png|bbmodel)$/i, "") || "skin";
     Blockbench.export({
       type: "PNG",
       extensions: ["png"],
       name: `${name}.png`,
-      content: texture.getDataURL(),
+      content: canvas.toDataURL("image/png"),
       savetype: "image"
     });
   }
@@ -2795,8 +2905,22 @@ Move those layers back to the top, or flatten the texture.`,
   };
   async function syncAuxTextures() {
     let added = false;
+    let recovered = false;
     for (const [key, { role, label }] of Object.entries(AUX_ROLES)) {
-      const bytes = state2.alfalfa.data[key];
+      let bytes = state2.alfalfa.data[key];
+      if (!bytes) {
+        const surviving = getAuxTexture(role);
+        if (surviving) {
+          try {
+            bytes = await encodePng(cloneToCanvas(surviving));
+            state2.alfalfa.version = state2.alfalfa.version || 1;
+            state2.alfalfa.data[key] = bytes;
+            recovered = true;
+          } catch (e) {
+            console.error(`[Ears] could not re-encode the surviving ${key} texture`, e);
+          }
+        }
+      }
       if (!bytes) {
         state2.preview.setTexture(key, null);
         state2.preview.setTexture(`emissive_${key}`, null);
@@ -2821,7 +2945,7 @@ Move those layers back to the top, or flatten the texture.`,
     vm.editingWing = !!getAuxTexture(AUX_ROLES.wing.role);
     vm.editingCape = !!getAuxTexture(AUX_ROLES.cape.role);
     Canvas.updateView({ elements: [], selection: false });
-    if (added) {
+    if (added || recovered) {
       state2.fingerprint = null;
       queueRefresh();
     }

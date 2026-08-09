@@ -97,8 +97,9 @@ anything to show up in game. There is no config file.
   named yourself are left alone.
 - **Wings and capes are paintable too.** They aren't in the skin's atlas at all — they're whole PNG
   files hidden in its alpha channel — so they get their own texture and their own UV space, and the
-  plugin adds them to the project automatically when a skin contains one. Paint the wing in 3D and it
-  is re-encoded back into the skin's alpha channel for you.
+  plugin adds them to the project automatically when a skin contains one. That hidden encoding is
+  applied **only at export**, so the skin you're drawing on stays a normal skin and painting can't
+  destroy an embedded wing.
 - **Plain Minecraft Skin projects get the preview, not the meshes**, because that format doesn't allow
   mesh elements. To paint Ears geometry on an existing skin, make an Ears Skin project and choose
   "Import a PNG…" for the texture.
@@ -188,8 +189,18 @@ Into it goes a small container: magic `0xEA1FA1FA`, a version byte, then length-
 entries. The value for `wing` is **the raw PNG file**, header and IDAT and all. So an Ears skin is an
 ordinary PNG with a second PNG hidden inside its alpha channel.
 
-The plugin decodes that into a real project texture, builds the wing geometry against it, and
-re-encodes on every edit — so painting the wing in 3D updates the skin file itself.
+The plugin decodes that into a real project texture and builds the wing geometry against it. Crucially
+it does **not** keep the encoding in the texture you're editing: the payload is held separately and
+applied to a copy only at export.
+
+That matters for two reasons. The encoding drops the alpha of scattered pixels to between 50% and 100%,
+so a skin carrying a wing looks faintly moth-eaten in the editor even though it renders solid in game
+(Minecraft forces those regions opaque). And more seriously, painting anywhere in those regions would
+overwrite the data and destroy the wing. Deferring to export means the skin you're drawing on is just a
+normal skin, and the wing can't be damaged by editing.
+
+Importing a skin that already has a wing works the same way round: the payload is lifted out of the
+alpha, the working texture is cleaned up, and it all goes back in when you export.
 
 ### Getting exact bytes through texture layers
 
