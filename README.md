@@ -62,8 +62,7 @@ Requires Blockbench 4.10 or newer. Developed and tested against 5.1.6.
 2. The project opens in paint mode with the **Ears** panel in the right sidebar.
 3. Hit **Fill empty regions** to see where every enabled feature reads from, then paint over it.
 4. Switch to **Pose** mode to check it from every angle.
-5. **File > Export > Export Ears Skin** for the finished PNG. (Saving as `.bbmodel` keeps your project
-   — bones, geometry edits and all — but it's the PNG that goes to Mojang.)
+5. **File > Export > Export Ears Skin** for the finished PNG.
 
 The panel also works on ordinary **Minecraft Skin** projects, so existing skins can be opened and
 edited without converting anything.

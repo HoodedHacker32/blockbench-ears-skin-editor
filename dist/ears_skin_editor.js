@@ -1518,6 +1518,17 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
   var suppressPresetReset = false;
   var lastInspectedFile = null;
   var detectedFeatures = null;
+  var importedSkin = null;
+  function getFileFieldContent(dlg) {
+    const field = dlg && dlg.form && dlg.form.form_data && dlg.form.form_data.texture_file;
+    if (!field) return null;
+    const content = field.content;
+    if (!content) return null;
+    return {
+      name: field.file && field.file.name || (typeof field.value === "string" ? field.value.split(/[\\/]/).pop() : null) || "skin.png",
+      content
+    };
+  }
   function toDataURL(file) {
     if (!file) return null;
     const content = file.content;
@@ -1552,7 +1563,15 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       const dataUrl = toDataURL(file);
       if (!dataUrl) return;
       const imageData = await decodeToImageData(dataUrl);
-      if (imageData.width !== 64 || imageData.height !== 64) return;
+      importedSkin = { name: file.name, dataUrl };
+      if (imageData.width !== 64 || imageData.height !== 64) {
+        importedSkin = null;
+        Blockbench.showQuickMessage(
+          `That skin is ${imageData.width}x${imageData.height}; Ears needs a 64x64 skin`,
+          3500
+        );
+        return;
+      }
       const version = detectFormat(imageData);
       if (version === "none") {
         detectedFeatures = null;
@@ -1627,7 +1646,17 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
           default: "template",
           options: { template: "UV template", blank: "Blank (transparent)", file: "Import a PNG\u2026" }
         },
-        texture_file: { label: "Skin file", type: "file", extensions: ["png"], filetype: "PNG", condition: (form) => form.texture_source === "file" },
+        // `readtype: 'image'` is essential -- without it Blockbench defaults to
+        // readAsText and a PNG comes back as mangled text, which silently
+        // produces a blank texture.
+        texture_file: {
+          label: "Skin file",
+          type: "file",
+          extensions: ["png"],
+          filetype: "PNG",
+          readtype: "image",
+          condition: (form) => form.texture_source === "file"
+        },
         // Blockbench checkboxes read `value`, not `default`.
         pose: { label: "Start in a natural pose", type: "checkbox", value: true },
         ears_line: "_",
@@ -1663,8 +1692,8 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       },
       onFormChange(form) {
         if (suppressPresetReset) return;
-        const file = form.texture_source === "file" ? form.texture_file : null;
-        const fileKey = file ? `${file.name || ""}:${file.content && file.content.byteLength || 0}` : null;
+        const file = form.texture_source === "file" ? getFileFieldContent(this) : null;
+        const fileKey = file ? `${file.name}:${String(file.content).length}` : null;
         if (fileKey && fileKey !== lastInspectedFile) {
           lastInspectedFile = fileKey;
           inspectImportedSkin(file, this);
@@ -1672,6 +1701,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
         if (!fileKey) {
           lastInspectedFile = null;
           detectedFeatures = null;
+          importedSkin = null;
         }
         if (this.last_preset !== form.preset) {
           this.last_preset = form.preset;
@@ -1692,9 +1722,15 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     return dialog;
   }
   function textureArgument(form) {
-    if (form.texture_source === "file" && form.texture_file) {
-      const content = toDataURL(form.texture_file);
-      if (content) return { name: form.texture_file.name || "skin.png", content };
+    if (form.texture_source === "file") {
+      if (importedSkin && importedSkin.dataUrl) {
+        return { name: importedSkin.name, content: importedSkin.dataUrl };
+      }
+      Blockbench.showMessageBox({
+        title: "Ears Skin",
+        message: "That skin couldn't be read, so the project was created with the UV template instead.\n\nPick the file again, or import it afterwards with Texture > Import."
+      });
+      return true;
     }
     if (form.texture_source === "blank") return false;
     return true;
@@ -1818,6 +1854,7 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
       new() {
         lastInspectedFile = null;
         detectedFeatures = null;
+        importedSkin = null;
         dialog.show();
         dialog.last_preset = void 0;
         return true;

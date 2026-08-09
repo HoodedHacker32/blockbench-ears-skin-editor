@@ -66,6 +66,24 @@ let suppressPresetReset = false;
 let lastInspectedFile = null;
 /** Features read out of an imported skin, so we can avoid rewriting them. */
 let detectedFeatures = null;
+/** The skin the user picked, as { name, dataUrl }. */
+let importedSkin = null;
+
+/**
+ * The chosen file's bytes are NOT in the form result -- a file field's result is
+ * just its path (and on the web, nothing at all). The live field object carries
+ * `.content` and `.file`, so reach for that instead.
+ */
+function getFileFieldContent(dlg) {
+	const field = dlg && dlg.form && dlg.form.form_data && dlg.form.form_data.texture_file;
+	if (!field) return null;
+	const content = field.content;
+	if (!content) return null;
+	return {
+		name: (field.file && field.file.name) || (typeof field.value === 'string' ? field.value.split(/[\\/]/).pop() : null) || 'skin.png',
+		content,
+	};
+}
 
 /**
  * Blockbench's file form field hands back `content` as a data URL, but importers
@@ -110,7 +128,16 @@ async function inspectImportedSkin(file, dlg) {
 		const dataUrl = toDataURL(file);
 		if (!dataUrl) return;
 		const imageData = await decodeToImageData(dataUrl);
-		if (imageData.width !== 64 || imageData.height !== 64) return;
+		importedSkin = { name: file.name, dataUrl };
+
+		if (imageData.width !== 64 || imageData.height !== 64) {
+			importedSkin = null;
+			Blockbench.showQuickMessage(
+				`That skin is ${imageData.width}x${imageData.height}; Ears needs a 64x64 skin`,
+				3500
+			);
+			return;
+		}
 
 		const version = Codec.detectFormat(imageData);
 		if (version === 'none') {
@@ -194,7 +221,17 @@ function buildDialog() {
 				default: 'template',
 				options: { template: 'UV template', blank: 'Blank (transparent)', file: 'Import a PNG…' },
 			},
-			texture_file: { label: 'Skin file', type: 'file', extensions: ['png'], filetype: 'PNG', condition: (form) => form.texture_source === 'file' },
+			// `readtype: 'image'` is essential -- without it Blockbench defaults to
+			// readAsText and a PNG comes back as mangled text, which silently
+			// produces a blank texture.
+			texture_file: {
+				label: 'Skin file',
+				type: 'file',
+				extensions: ['png'],
+				filetype: 'PNG',
+				readtype: 'image',
+				condition: (form) => form.texture_source === 'file',
+			},
 			// Blockbench checkboxes read `value`, not `default`.
 			pose: { label: 'Start in a natural pose', type: 'checkbox', value: true },
 
@@ -243,8 +280,8 @@ function buildDialog() {
 			// A skin picked for import may already carry Ears data. Read it and fill
 			// the form in, so importing an existing Ears skin doesn't quietly
 			// overwrite its settings with the dialog's defaults.
-			const file = form.texture_source === 'file' ? form.texture_file : null;
-			const fileKey = file ? `${file.name || ''}:${(file.content && file.content.byteLength) || 0}` : null;
+			const file = form.texture_source === 'file' ? getFileFieldContent(this) : null;
+			const fileKey = file ? `${file.name}:${String(file.content).length}` : null;
 			if (fileKey && fileKey !== lastInspectedFile) {
 				lastInspectedFile = fileKey;
 				inspectImportedSkin(file, this);
@@ -252,6 +289,7 @@ function buildDialog() {
 			if (!fileKey) {
 				lastInspectedFile = null;
 				detectedFeatures = null;
+				importedSkin = null;
 			}
 
 			// Picking a preset fills in the rest of the form.
@@ -277,10 +315,22 @@ function buildDialog() {
 // --- project construction --------------------------------------------------
 
 function textureArgument(form) {
-	if (form.texture_source === 'file' && form.texture_file) {
-		// Hand the codec a shape Texture.fromFile definitely understands.
-		const content = toDataURL(form.texture_file);
-		if (content) return { name: form.texture_file.name || 'skin.png', content };
+	if (form.texture_source === 'file') {
+		// Texture.fromFile only understands `content` as a data URL string, and
+		// quietly yields a blank texture otherwise -- importedSkin is already
+		// normalised to that when the file was read.
+		if (importedSkin && importedSkin.dataUrl) {
+			return { name: importedSkin.name, content: importedSkin.dataUrl };
+		}
+		// Don't silently fall back to the template: that looks like the import
+		// simply did nothing.
+		Blockbench.showMessageBox({
+			title: 'Ears Skin',
+			message:
+				"That skin couldn't be read, so the project was created with the UV template instead.\n\n" +
+				'Pick the file again, or import it afterwards with Texture > Import.',
+		});
+		return true;
 	}
 	if (form.texture_source === 'blank') return false;
 	return true; // let the codec generate its UV template
@@ -449,6 +499,7 @@ export function registerFormat() {
 			// Forget anything read from a previously chosen file.
 			lastInspectedFile = null;
 			detectedFeatures = null;
+			importedSkin = null;
 			dialog.show();
 			// Re-apply the current preset so the form is consistent on reopen.
 			dialog.last_preset = undefined;
