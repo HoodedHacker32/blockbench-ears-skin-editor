@@ -19,6 +19,7 @@ import * as Regions from './regions.js';
 import * as Fmt from './format.js';
 import * as MeshBuilder from './meshbuilder.js';
 import * as Validate from './validate.js';
+import * as Layers from './layers.js';
 import { EarsPreview } from './renderer.js';
 
 const PLUGIN_ID = 'ears_skin_editor';
@@ -140,6 +141,11 @@ function refresh() {
 	vm.slim = detectSlim();
 	vm.jacket = jacketVisible();
 	vm.layered = Skin.isLayered(texture);
+	// Our managed layers only work while nothing sits above them, and the user is
+	// free to drag layers around. Put them back on top if they've moved.
+	if (vm.layered && !state.suspend && Layers.raiseManagedLayers(texture)) {
+		texture.updateLayerChanges(true);
+	}
 
 	const { objects, alfalfa } = Bridge.buildQuads(imageData, { slim: vm.slim, jacket: vm.jacket });
 	state.alfalfa = alfalfa;
@@ -610,10 +616,10 @@ function buildPanel() {
 							</span>
 						</div>
 
-						<div v-if="vm.layered" class="ears_notice ears_warn">
-							This texture has layers, so Ears settings can't be written — the data needs
-							exact pixel and alpha values, which layer compositing can't reproduce.
-							Reading and the 3D preview still work.
+						<div v-if="vm.layered" class="ears_notice">
+							Layers are on, so Ears data is kept in two managed layers
+							(<b>Ears Data</b> and <b>Ears Alfalfa</b>) that must stay at the top of the
+							stack. Everything else is yours to paint as usual.
 							<div class="ears_row ears_buttons">
 								<button @click="flatten()">Flatten layers</button>
 							</div>

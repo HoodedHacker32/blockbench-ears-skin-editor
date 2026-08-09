@@ -78,12 +78,10 @@ anything to show up in game. There is no config file.
   The "Texture regions" section of the panel tells you every rect in use, and can fill them for you.
 - **Wings need a wing image.** Setting a wing mode without importing a 20x16 wing PNG does nothing;
   Ears itself disables wings in that case. The panel warns you.
-- **Texture layers need flattening before settings can be changed.** Ears data isn't artwork — it's
-  exact pixel values plus exact alpha across large regions, and layer compositing can't reproduce
-  either. Reading and the 3D preview work fine with layers on; only writing is blocked, and the panel
-  has a one-click **Flatten layers** button. (Blockbench's own "Disable Texture Layers" acts on
-  whichever texture happens to be *selected*, which is why flattening from there only works sometimes —
-  this targets the skin explicitly.)
+- **Texture layers work — no flattening needed.** Ears data is written into two managed layers,
+  **Ears Data** and **Ears Alfalfa**, which are kept at the top of the stack and put back there if you
+  move them. Everything below is yours to paint normally. A **Flatten layers** button is still in the
+  panel if you'd rather bake it down.
 - **You can edit the magic pixels by hand.** Paint a valid value and it just shows up in the panel.
   Paint something Ears can't read and the change is reverted with a note saying which pixel was wrong
   and why — otherwise Ears would silently reinterpret it as "off" and the skin would quietly stop
@@ -138,6 +136,8 @@ official manipulator does, and that a wing PNG survives the alpha-channel round 
 | `src/presets.js` | Player model definitions and the starting feature presets |
 | `src/regions.js` | Derives which texture pixels the current config reads |
 | `src/meshbuilder.js` | Builds the Ears quads as real, paintable Blockbench mesh elements |
+| `src/layers.js` | Writes exact RGB and alpha through managed texture layers |
+| `src/validate.js` | Checks hand-edited magic pixels are something Ears can read |
 | `src/skin.js` | Texture reads/writes through the undo system; PNG to canvas and back |
 | `src/index.js` | Plugin registration, panel UI, event wiring |
 
@@ -190,6 +190,25 @@ ordinary PNG with a second PNG hidden inside its alpha channel.
 
 The plugin decodes that into a real project texture, builds the wing geometry against it, and
 re-encodes on every edit — so painting the wing in 3D updates the skin file itself.
+
+### Getting exact bytes through texture layers
+
+Ordinary `source-over` compositing can only ever *raise* alpha, so a top layer can't produce the
+sub-255 values Alfalfa needs. Blockbench has a second mechanism though: an `alpha_mask` layer
+**multiplies** the composite's alpha by its own red channel (see `Texture.updateLayerChanges`). Over an
+opaque pixel that reproduces any target exactly — verified across the whole 0x80–0xFF range Alfalfa
+uses, with no rounding error. Hence the two layers: `Ears Data` carries opaque RGB, `Ears Alfalfa`
+carries the alpha.
+
+The catch is that a mask multiplies rather than sets, so it only lands on target over an opaque base.
+Writing over a skin whose base layer *already* held Alfalfa alpha of 183 would give 183×183/255 = 131
+and silently corrupt the payload. Compensating arithmetically doesn't round-trip reliably, so any pixel
+whose final alpha isn't 255 is forced opaque in the data layer first. That stays cheap because Alfalfa
+writes 0xFF for every pixel past the end of its payload — only the payload itself is ever stamped, so
+the rest of the skin keeps showing whatever you paint underneath.
+
+Every write is verified against the resulting composite, and if it doesn't match (something painting
+over the managed layers) you get told rather than shipping a broken skin.
 
 ## How the preview is positioned
 

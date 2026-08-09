@@ -1128,6 +1128,132 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
     return imageData;
   }
 
+  // src/layers.js
+  var DATA_LAYER = "Ears Data";
+  var MASK_LAYER = "Ears Alfalfa";
+  var ENCODE_REGIONS = [
+    [8, 0, 24, 8],
+    [0, 8, 8, 16],
+    [16, 8, 32, 16],
+    [4, 16, 12, 20],
+    [20, 16, 36, 20],
+    [44, 16, 52, 20],
+    [0, 20, 56, 32],
+    [20, 48, 28, 52],
+    [36, 48, 44, 52],
+    [16, 52, 48, 64]
+  ];
+  function controlledMask(width, height) {
+    const set = new Uint8Array(width * height);
+    for (let y = 32; y < 36; y++) {
+      for (let x = 0; x < 4; x++) set[y * width + x] = 1;
+    }
+    for (const [x1, y1, x2, y2] of ENCODE_REGIONS) {
+      for (let y = y1; y < y2; y++) {
+        for (let x = x1; x < x2; x++) set[y * width + x] = 1;
+      }
+    }
+    return set;
+  }
+  function findLayer(texture, name) {
+    return (texture.layers || []).find((l) => l.name === name) || null;
+  }
+  function ensureLayer(texture, name, blendMode) {
+    let layer = findLayer(texture, name);
+    if (!layer) {
+      layer = new TextureLayer({ name, offset: [0, 0] }, texture);
+      layer.setSize(texture.width, texture.height);
+      texture.layers.push(layer);
+    }
+    if (layer.width !== texture.width || layer.height !== texture.height) {
+      layer.setSize(texture.width, texture.height);
+    }
+    layer.blend_mode = blendMode;
+    layer.visible = true;
+    layer.opacity = 100;
+    return layer;
+  }
+  function raiseManagedLayers(texture) {
+    if (!texture || !texture.layers) return false;
+    const data = findLayer(texture, DATA_LAYER);
+    const mask = findLayer(texture, MASK_LAYER);
+    if (!data && !mask) return false;
+    let moved = false;
+    for (const layer of [data, mask]) {
+      if (!layer) continue;
+      const at = texture.layers.indexOf(layer);
+      if (at !== -1) texture.layers.splice(at, 1);
+      texture.layers.push(layer);
+      if (at !== texture.layers.length - 1) moved = true;
+    }
+    return moved;
+  }
+  function readBaseComposite(texture) {
+    const data = findLayer(texture, DATA_LAYER);
+    const mask = findLayer(texture, MASK_LAYER);
+    const states = [];
+    for (const layer of [data, mask]) {
+      if (!layer) continue;
+      states.push([layer, layer.visible]);
+      layer.visible = false;
+    }
+    texture.updateLayerChanges(false);
+    const base = texture.ctx.getImageData(0, 0, texture.width, texture.height);
+    for (const [layer, visible] of states) layer.visible = visible;
+    return base;
+  }
+  function writeThroughLayers(texture, mutate) {
+    const width = texture.width;
+    const height = texture.height;
+    const full = texture.ctx.getImageData(0, 0, width, height);
+    const base = readBaseComposite(texture);
+    texture.updateLayerChanges(false);
+    const desired = new ImageData(new Uint8ClampedArray(full.data), width, height);
+    mutate(desired);
+    const controlled = controlledMask(width, height);
+    const data = ensureLayer(texture, DATA_LAYER, "default");
+    const mask = ensureLayer(texture, MASK_LAYER, "alpha_mask");
+    raiseManagedLayers(texture);
+    const dataImg = data.ctx.createImageData(width, height);
+    const maskImg = mask.ctx.createImageData(width, height);
+    for (let i = 0; i < controlled.length; i++) {
+      const p = i * 4;
+      maskImg.data[p] = controlled[i] ? desired.data[p + 3] : 255;
+      maskImg.data[p + 1] = 0;
+      maskImg.data[p + 2] = 0;
+      maskImg.data[p + 3] = 255;
+      if (!controlled[i]) continue;
+      const rgbDiffers = desired.data[p] !== base.data[p] || desired.data[p + 1] !== base.data[p + 1] || desired.data[p + 2] !== base.data[p + 2];
+      const needsOpaqueBase = desired.data[p + 3] !== 255 && base.data[p + 3] !== 255;
+      if (rgbDiffers || needsOpaqueBase) {
+        dataImg.data[p] = desired.data[p];
+        dataImg.data[p + 1] = desired.data[p + 1];
+        dataImg.data[p + 2] = desired.data[p + 2];
+        dataImg.data[p + 3] = 255;
+      }
+    }
+    data.ctx.clearRect(0, 0, width, height);
+    data.ctx.putImageData(dataImg, 0, 0);
+    mask.ctx.clearRect(0, 0, width, height);
+    mask.ctx.putImageData(maskImg, 0, 0);
+    texture.updateLayerChanges(true);
+    const result = texture.ctx.getImageData(0, 0, width, height);
+    let mismatches = 0;
+    for (let i = 0; i < controlled.length; i++) {
+      if (!controlled[i]) continue;
+      const p = i * 4;
+      if (result.data[p + 3] !== desired.data[p + 3]) {
+        mismatches++;
+        continue;
+      }
+      if (desired.data[p + 3] === 0) continue;
+      if (result.data[p] !== desired.data[p] || result.data[p + 1] !== desired.data[p + 1] || result.data[p + 2] !== desired.data[p + 2]) {
+        mismatches++;
+      }
+    }
+    return { ok: mismatches === 0, mismatches };
+  }
+
   // src/skin.js
   var WING_TEXTURE_NAME = "ears_wing";
   var CAPE_TEXTURE_NAME = "ears_cape";
@@ -1188,19 +1314,22 @@ a.addEventListener=a.$addEventListener$exported$0;a.removeEventListener=a.$remov
   function editTexture(texture, fn, undoName) {
     if (!texture) return false;
     if (isLayered(texture)) {
+      Undo.initEdit({ textures: [texture], bitmap: true });
+      const { ok, mismatches } = writeThroughLayers(texture, fn);
+      Undo.finishEdit(undoName);
+      if (ok) return true;
       Blockbench.showMessageBox(
         {
-          title: "Ears: flatten layers first",
-          message: `"${texture.name}" has layers enabled. Ears data isn't artwork \u2014 it's exact pixel values in the 4\xD74 block at x 0-3, y 32-35 plus the alpha channel of large regions of the skin, and layer compositing cannot reproduce exact alpha. So it has to be written to a flat image.
+          title: "Ears: layers are covering the data",
+          message: `The Ears data couldn't be written through "${texture.name}"'s layers \u2014 ${mismatches} pixel(s) came out wrong, which usually means a layer above "Ears Data" / "Ears Alfalfa" is painting over them.
 
-Flattening merges your layers down; nothing is lost, and it can be undone.`,
+Move those layers back to the top, or flatten the texture.`,
           buttons: ["Flatten now", "Cancel"],
           confirm: 0,
           cancel: 1
         },
         (result) => {
-          if (result !== 0) return;
-          if (flattenTexture(texture)) {
+          if (result === 0 && flattenTexture(texture)) {
             Blockbench.showQuickMessage("Layers flattened \u2014 try that again", 2500);
           }
         }
@@ -2476,6 +2605,9 @@ Flattening merges your layers down; nothing is lost, and it can be undone.`,
     vm.slim = detectSlim();
     vm.jacket = jacketVisible();
     vm.layered = isLayered(texture);
+    if (vm.layered && !state2.suspend && raiseManagedLayers(texture)) {
+      texture.updateLayerChanges(true);
+    }
     const { objects, alfalfa } = buildQuads(imageData, { slim: vm.slim, jacket: vm.jacket });
     state2.alfalfa = alfalfa;
     vm.hasWing = !!alfalfa.data.wing;
@@ -2853,10 +2985,10 @@ Flattening merges your layers down; nothing is lost, and it can be undone.`,
 							</span>
 						</div>
 
-						<div v-if="vm.layered" class="ears_notice ears_warn">
-							This texture has layers, so Ears settings can't be written \u2014 the data needs
-							exact pixel and alpha values, which layer compositing can't reproduce.
-							Reading and the 3D preview still work.
+						<div v-if="vm.layered" class="ears_notice">
+							Layers are on, so Ears data is kept in two managed layers
+							(<b>Ears Data</b> and <b>Ears Alfalfa</b>) that must stay at the top of the
+							stack. Everything else is yours to paint as usual.
 							<div class="ears_row ears_buttons">
 								<button @click="flatten()">Flatten layers</button>
 							</div>

@@ -3,6 +3,8 @@
 // the undo system, and moving PNGs in and out of Alfalfa.
 // ---------------------------------------------------------------------------
 
+import * as Layers from './layers.js';
+
 export const WING_TEXTURE_NAME = 'ears_wing';
 export const CAPE_TEXTURE_NAME = 'ears_cape';
 
@@ -98,23 +100,30 @@ export function flattenTexture(texture) {
 
 export function editTexture(texture, fn, undoName) {
 	if (!texture) return false;
+
+	// Layered textures are written through two managed layers rather than being
+	// flattened -- see layers.js. Verification is built in, so if the composite
+	// doesn't come out exactly right we fall back to offering a flatten.
 	if (isLayered(texture)) {
+		Undo.initEdit({ textures: [texture], bitmap: true });
+		const { ok, mismatches } = Layers.writeThroughLayers(texture, fn);
+		Undo.finishEdit(undoName);
+		if (ok) return true;
+
 		Blockbench.showMessageBox(
 			{
-				title: 'Ears: flatten layers first',
+				title: 'Ears: layers are covering the data',
 				message:
-					`"${texture.name}" has layers enabled. Ears data isn't artwork — it's exact pixel ` +
-					'values in the 4×4 block at x 0-3, y 32-35 plus the alpha channel of large regions ' +
-					'of the skin, and layer compositing cannot reproduce exact alpha. So it has to be ' +
-					'written to a flat image.\n\n' +
-					'Flattening merges your layers down; nothing is lost, and it can be undone.',
+					`The Ears data couldn't be written through "${texture.name}"'s layers — ${mismatches} ` +
+					'pixel(s) came out wrong, which usually means a layer above "Ears Data" / ' +
+					'"Ears Alfalfa" is painting over them.\n\n' +
+					'Move those layers back to the top, or flatten the texture.',
 				buttons: ['Flatten now', 'Cancel'],
 				confirm: 0,
 				cancel: 1,
 			},
 			(result) => {
-				if (result !== 0) return;
-				if (flattenTexture(texture)) {
+				if (result === 0 && flattenTexture(texture)) {
 					Blockbench.showQuickMessage('Layers flattened — try that again', 2500);
 				}
 			}
