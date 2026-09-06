@@ -21,6 +21,22 @@ createServer(async (req, res) => {
 		res.writeHead(200, { 'Access-Control-Allow-Origin': '*' }).end('ok');
 		return;
 	}
+	// POST /_save?path=<repo-relative path> -> writes a base64 body to that file.
+	// Used to get generated binaries (a .mcpack, say) out of the browser.
+	if (req.method === 'POST' && req.url.startsWith('/_save')) {
+		const rel = new URL(req.url, 'http://localhost').searchParams.get('path') || 'out.bin';
+		const target = path.resolve(root, rel);
+		if (!target.startsWith(root)) {
+			res.writeHead(403, { 'Access-Control-Allow-Origin': '*' }).end('forbidden');
+			return;
+		}
+		const chunks = [];
+		for await (const c of req) chunks.push(c);
+		await mkdir(path.dirname(target), { recursive: true });
+		await writeFile(target, Buffer.from(Buffer.concat(chunks).toString('utf8'), 'base64'));
+		res.writeHead(200, { 'Access-Control-Allow-Origin': '*' }).end('ok');
+		return;
+	}
 	if (req.method === 'OPTIONS') {
 		res.writeHead(204, {
 			'Access-Control-Allow-Origin': '*',

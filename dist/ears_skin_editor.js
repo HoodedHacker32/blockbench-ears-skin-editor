@@ -2558,9 +2558,32 @@ Move those layers back to the top, or flatten the texture.`,
   // src/bedrock-geometry.js
   var HEAD = { x: -4, y: 24, z: -4 };
   var TORSO = { x: -4, y: 12, z: -2 };
-  var TAIL_ANGLE = { DOWN: 30, BACK: 80, UP: 130 };
+  var FAN_MODES = ["BACK", "CROSS", "CROSS_OVERLAP", "STAR", "STAR_OVERLAP"];
+  function tailBaseAngle(mode, bend0) {
+    if (mode === "DOWN") return 30;
+    if (mode === "UP") return 130;
+    if (FAN_MODES.includes(mode)) return bend0 !== 0 ? 90 : 80;
+    return void 0;
+  }
+  function tailFan(mode) {
+    if (mode === "CROSS" || mode === "CROSS_OVERLAP") return [90];
+    if (mode === "STAR" || mode === "STAR_OVERLAP") return [45, 90, 135];
+    return [];
+  }
+  function tailOverlap(mode) {
+    return mode === "CROSS_OVERLAP" || mode === "STAR_OVERLAP" ? 4 : 0;
+  }
   var SUPPORTED_EAR_MODES = ["NONE", "ABOVE", "SIDES"];
-  var SUPPORTED_TAIL_MODES = ["NONE", "DOWN", "BACK", "UP"];
+  var SUPPORTED_TAIL_MODES = [
+    "NONE",
+    "DOWN",
+    "BACK",
+    "UP",
+    "CROSS",
+    "CROSS_OVERLAP",
+    "STAR",
+    "STAR_OVERLAP"
+  ];
   function anchorZ(earAnchor) {
     if (earAnchor === "BACK") return 8;
     if (earAnchor === "FRONT") return 0;
@@ -2697,27 +2720,43 @@ Move those layers back to the top, or flatten the texture.`,
     }];
   }
   function tailBones(features) {
-    const base = TAIL_ANGLE[features.tailMode];
+    const bend0 = features.tailBend0 || 0;
+    const base = tailBaseAngle(features.tailMode, bend0);
     if (base === void 0) return [];
     const segments = Math.max(1, Math.min(4, features.tailSegments || 1));
     const segHeight = 12 / segments;
-    const bends = [features.tailBend0, features.tailBend1, features.tailBend2, features.tailBend3];
+    const bends = [bend0, features.tailBend1, features.tailBend2, features.tailBend3];
+    const fan = tailFan(features.tailMode);
+    const overlap = tailOverlap(features.tailMode);
     const z = TORSO.z + 4;
     const top = TORSO.y + 2;
     const bones = [];
     for (let i = 0; i < segments; i++) {
       const pivotY = top - i * segHeight;
-      const rotation = i === 0 ? base + (bends[0] || 0) : bends[i] || 0;
+      const rotation = i === 0 ? base + bend0 : bends[i] || 0;
+      const ofs = i === 0 ? 0 : overlap;
+      const height = segHeight + ofs;
+      const bottom = pivotY - segHeight;
+      const cubes = [{
+        origin: [-4, bottom, z],
+        size: [8, height, 0],
+        uv: quadUV(56, 16 + i * segHeight - ofs, 8, height)
+      }];
+      for (const angle of fan) {
+        cubes.push({
+          origin: [-4, bottom, z],
+          size: [8, height, 0],
+          pivot: [0, bottom, z],
+          rotation: [0, angle, 0],
+          uv: quadUV(56, 16 + i * segHeight - ofs, 8, height)
+        });
+      }
       bones.push({
         name: i === 0 ? "tail" : `tail_${i}`,
         parent: i === 0 ? "body" : i === 1 ? "tail" : `tail_${i - 1}`,
         pivot: [0, pivotY, z],
         rotation: [rotation, 0, 0],
-        cubes: [{
-          origin: [-4, pivotY - segHeight, z],
-          size: [8, segHeight, 0],
-          uv: quadUV(56, 16 + i * segHeight, 8, segHeight)
-        }]
+        cubes
       });
     }
     return bones;

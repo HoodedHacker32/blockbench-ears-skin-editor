@@ -22,9 +22,39 @@ const TORSO = { x: -4, y: 12, z: -2 };
 /** Ears' base tail angle per mode, from EarsRenderer. */
 const TAIL_ANGLE = { DOWN: 30, BACK: 80, UP: 130 };
 
+/**
+ * BACK and the cross/star family share one rule in EarsRenderer: 90 degrees when
+ * the first segment is bent, 80 otherwise.
+ */
+const FAN_MODES = ['BACK', 'CROSS', 'CROSS_OVERLAP', 'STAR', 'STAR_OVERLAP'];
+
+function tailBaseAngle(mode, bend0) {
+	if (mode === 'DOWN') return 30;
+	if (mode === 'UP') return 130;
+	if (FAN_MODES.includes(mode)) return bend0 !== 0 ? 90 : 80;
+	return undefined;
+}
+
+/**
+ * Extra quads fanned around the tail's centre line. CROSS adds one at 90
+ * degrees; STAR adds three at 45, 90 and 135, making a star in cross-section.
+ */
+function tailFan(mode) {
+	if (mode === 'CROSS' || mode === 'CROSS_OVERLAP') return [90];
+	if (mode === 'STAR' || mode === 'STAR_OVERLAP') return [45, 90, 135];
+	return [];
+}
+
+/** The overlap modes extend each segment past the previous one by 4px. */
+function tailOverlap(mode) {
+	return mode === 'CROSS_OVERLAP' || mode === 'STAR_OVERLAP' ? 4 : 0;
+}
+
 /** Which modes we can express as Bedrock geometry. */
 export const SUPPORTED_EAR_MODES = ['NONE', 'ABOVE', 'SIDES'];
-export const SUPPORTED_TAIL_MODES = ['NONE', 'DOWN', 'BACK', 'UP'];
+export const SUPPORTED_TAIL_MODES = [
+	'NONE', 'DOWN', 'BACK', 'UP', 'CROSS', 'CROSS_OVERLAP', 'STAR', 'STAR_OVERLAP',
+];
 
 /** Ears' EarAnchor as a Z offset from the front of the head. */
 function anchorZ(earAnchor) {
@@ -154,12 +184,15 @@ function snoutBones(features) {
 }
 
 function tailBones(features) {
-	const base = TAIL_ANGLE[features.tailMode];
+	const bend0 = features.tailBend0 || 0;
+	const base = tailBaseAngle(features.tailMode, bend0);
 	if (base === undefined) return [];
 
 	const segments = Math.max(1, Math.min(4, features.tailSegments || 1));
 	const segHeight = 12 / segments;
-	const bends = [features.tailBend0, features.tailBend1, features.tailBend2, features.tailBend3];
+	const bends = [bend0, features.tailBend1, features.tailBend2, features.tailBend3];
+	const fan = tailFan(features.tailMode);
+	const overlap = tailOverlap(features.tailMode);
 
 	// anchorTo(TORSO) then translate(0,-2,4).
 	const z = TORSO.z + 4;
@@ -170,17 +203,39 @@ function tailBones(features) {
 		const pivotY = top - i * segHeight;
 		// Bedrock's positive X bone rotation matches Ears' positive tail angle --
 		// getting this backwards swings the tail forward through the body.
-		const rotation = i === 0 ? base + (bends[0] || 0) : bends[i] || 0;
+		const rotation = i === 0 ? base + bend0 : bends[i] || 0;
+
+		// The overlap modes let every segment after the first reach back over the
+		// previous one, so the seam doesn't show when the tail bends.
+		const ofs = i === 0 ? 0 : overlap;
+		const height = segHeight + ofs;
+		const bottom = pivotY - segHeight;
+
+		const cubes = [{
+			origin: [-4, bottom, z],
+			size: [8, height, 0],
+			uv: quadUV(56, 16 + i * segHeight - ofs, 8, height),
+		}];
+
+		// Extra blades rotated about the tail's own centre line. Ears does this by
+		// translating to x=4 in tail space (x=0 here), rotating about Y, and
+		// translating back.
+		for (const angle of fan) {
+			cubes.push({
+				origin: [-4, bottom, z],
+				size: [8, height, 0],
+				pivot: [0, bottom, z],
+				rotation: [0, angle, 0],
+				uv: quadUV(56, 16 + i * segHeight - ofs, 8, height),
+			});
+		}
+
 		bones.push({
 			name: i === 0 ? 'tail' : `tail_${i}`,
 			parent: i === 0 ? 'body' : i === 1 ? 'tail' : `tail_${i - 1}`,
 			pivot: [0, pivotY, z],
 			rotation: [rotation, 0, 0],
-			cubes: [{
-				origin: [-4, pivotY - segHeight, z],
-				size: [8, segHeight, 0],
-				uv: quadUV(56, 16 + i * segHeight, 8, segHeight),
-			}],
+			cubes,
 		});
 	}
 	return bones;

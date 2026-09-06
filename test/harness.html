@@ -251,11 +251,36 @@ section('bedrock geometry');
 	}
 
 	{
+		// CROSS adds one blade at 90 degrees about the tail's own centre line;
+		// STAR adds three. Both keep the plain quad as the first cube.
+		const cross = buildGeometry('geometry.t', feat({ tailMode: 'CROSS', tailSegments: 2, tailBend0: -44, tailBend1: 18 })).geometry;
+		const seg0 = cross.bones.find((b) => b.name === 'tail');
+		eq('CROSS segment has 2 cubes', seg0.cubes.length, 2);
+		eq('CROSS blade is rotated 90 about Y', seg0.cubes[1].rotation, [0, 90, 0]);
+		eq('CROSS blade pivots on the centre line', seg0.cubes[1].pivot[0], 0);
+		// bend0 is non-zero, so the base angle is 90 rather than 80.
+		check('bent CROSS uses a 90deg base', Math.abs(seg0.rotation[0] - (90 - 44)) < 0.001, `${seg0.rotation[0]}`);
+
+		const flat = buildGeometry('geometry.t', feat({ tailMode: 'CROSS', tailSegments: 1, tailBend0: 0 })).geometry;
+		eq('unbent CROSS uses an 80deg base', flat.bones.find((b) => b.name === 'tail').rotation[0], 80);
+
+		const star = buildGeometry('geometry.t', feat({ tailMode: 'STAR', tailSegments: 1 })).geometry;
+		eq('STAR segment has 4 cubes', star.bones.find((b) => b.name === 'tail').cubes.length, 4);
+		eq('STAR blades fan at 45/90/135',
+			star.bones.find((b) => b.name === 'tail').cubes.slice(1).map((c) => c.rotation[1]), [45, 90, 135]);
+
+		const overlap = buildGeometry('geometry.t', feat({ tailMode: 'CROSS_OVERLAP', tailSegments: 2 })).geometry;
+		const segs = overlap.bones.filter((b) => /^tail/.test(b.name));
+		eq('overlap leaves segment 0 alone', segs[0].cubes[0].size[1], 6);
+		eq('overlap extends later segments by 4', segs[1].cubes[0].size[1], 10);
+	}
+
+	{
 		const { unsupported } = buildGeometry('geometry.t', feat({
-			earMode: 'TALL', tailMode: 'STAR', claws: true, horn: true, wingMode: 'SYMMETRIC_DUAL',
+			earMode: 'TALL', tailMode: 'VERTICAL', claws: true, horn: true, wingMode: 'SYMMETRIC_DUAL',
 		}));
 		check('reports TALL ears as unsupported', unsupported.some((u) => /TALL/.test(u)));
-		check('reports STAR tail as unsupported', unsupported.some((u) => /STAR/.test(u)));
+		check('reports VERTICAL tail as unsupported', unsupported.some((u) => /VERTICAL/.test(u)));
 		check('reports wings as unsupported', unsupported.includes('wings'));
 		log(`  info  unsupported: ${unsupported.join(', ')}`, 'info');
 	}

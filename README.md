@@ -138,7 +138,9 @@ each skin rather than silently producing something wrong:
 
 - **Ear modes** other than above and sides (tall, cross, floppy, out, around, behind) — these need
   rotated UVs or rotated bone chains that aren't implemented yet.
-- **Tail modes** other than down, back and up.
+- **The vertical tail mode.** Every other tail mode exports — down, back, up, cross, overlapping cross,
+  star and overlapping star — including per-segment bend angles, the cross/star blades, and Ears' rule
+  that a bent tail uses a 90° base angle instead of 80°.
 - **Claws, horn, chest, emissive.**
 - **Wings and capes** — those are whole PNGs hidden in the skin's alpha channel, and a skin pack has
   nowhere to put a second texture per skin.

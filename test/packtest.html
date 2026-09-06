@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<title>Ears skin pack -- live export test</title>
+	<style>
+		body { font: 13px/1.6 ui-monospace, Consolas, monospace; background: #16161a; color: #ddd; padding: 16px; }
+		.pass { color: #6ec46e; } .fail { color: #ff6b6b; } .info { color: #8ab4f8; } .head { color: #fff; }
+		pre { margin: 2px 0; white-space: pre-wrap; }
+		h2 { color: #fff; font-size: 14px; margin: 16px 0 4px; border-bottom: 1px solid #333; }
+		canvas { image-rendering: pixelated; border: 1px solid #444; margin: 8px 8px 0 0; }
+	</style>
+</head>
+<body>
+<h1 style="font-size:16px">Ears skin pack — live export test</h1>
+<div id="out"></div>
+<div id="pics"></div>
+
+<script src="../vendor/ears-common.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<script type="module">
+import * as Codec from '../src/codec.js';
+import * as V0 from '../src/codec-v0.js';
+import * as SkinPack from '../src/skinpack.js';
+import { buildGeometry } from '../src/bedrock-geometry.js';
+
+const out = document.getElementById('out');
+const log = (m, c = '') => { const p = document.createElement('pre'); p.className = c; p.textContent = m; out.appendChild(p); };
+const section = (n) => { const h = document.createElement('h2'); h.textContent = n; out.appendChild(h); };
+
+const SKIN = new URLSearchParams(location.search).get('skin') || 'tmp/catmaid.png';
+const PACK_NAME = new URLSearchParams(location.search).get('name') || 'Catmaid';
+const SLIM = new URLSearchParams(location.search).get('slim') === '1';
+
+function toDataURL(bytes) {
+	let bin = '';
+	for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+	return 'data:image/png;base64,' + btoa(bin);
+}
+
+section('source skin');
+const raw = new Uint8Array(await (await fetch(SKIN)).arrayBuffer());
+log(`${SKIN} — ${raw.length} bytes`, 'info');
+const dataUrl = toDataURL(raw);
+
+// Show it, and show the magic-pixel block blown up.
+const img = new Image();
+await new Promise((r) => { img.onload = r; img.src = dataUrl; });
+const pics = document.getElementById('pics');
+const show = (src, w, h, scale, label) => {
+	const c = document.createElement('canvas');
+	c.width = w * scale; c.height = h * scale;
+	const cx = c.getContext('2d');
+	cx.imageSmoothingEnabled = false;
+	cx.drawImage(src, 0, 0, w, h, 0, 0, w * scale, h * scale);
+	c.title = label;
+	pics.appendChild(c);
+};
+show(img, 64, 64, 5, 'skin');
+
+section('what the plugin reads out of it');
+const result = await SkinPack.inspectSkin({ name: 'catmaid.png', content: dataUrl });
+if (result.error) {
+	log(`FAILED: ${result.error}`, 'fail');
+} else {
+	log(`format: ${result.version}`, result.version === 'none' ? 'fail' : 'pass');
+	log(`summary: ${SkinPack.summarise(result)}`, 'pass');
+	const f = result.features;
+	const rows = [
+		['enabled', f.enabled], ['earMode', f.earMode], ['earAnchor', f.earAnchor],
+		['claws', f.claws], ['horn', f.horn],
+		['tailMode', f.tailMode], ['tailSegments', f.tailSegments],
+		['tailBends', [f.tailBend0, f.tailBend1, f.tailBend2, f.tailBend3].map((n) => Math.round(n)).join(', ')],
+		['snout', `${f.snoutWidth}x${f.snoutHeight}x${f.snoutDepth} +${f.snoutOffset}`],
+		['chestSize', f.chestSize.toFixed(2)], ['wingMode', f.wingMode],
+		['capeEnabled', f.capeEnabled], ['emissive', f.emissive],
+	];
+	for (const [k, v] of rows) log(`  ${k.padEnd(14)} ${v}`);
+}
+
+section('geometry generated for it');
+if (!result.error) {
+	const { geometry, unsupported } = buildGeometry('geometry.test.catmaid', result.features, { slim: SLIM });
+	const ears = geometry.bones.filter((b) => /^(ears|ear_|snout|tail)/.test(b.name));
+	log(`${geometry.bones.length} bones total, ${ears.length} of them from Ears`, 'pass');
+	for (const b of ears) {
+		const c = b.cubes && b.cubes[0];
+		log(`  ${b.name.padEnd(12)} origin ${JSON.stringify(c.origin)} size ${JSON.stringify(c.size)}` +
+			(b.rotation ? ` rot ${JSON.stringify(b.rotation)}` : '') +
+			(c.uv && c.uv.north ? ` uv ${JSON.stringify(c.uv.north.uv)}` : ''));
+	}
+	log(unsupported.length ? `not representable in Bedrock: ${unsupported.join(', ')}` : 'everything it uses is representable',
+		unsupported.length ? 'info' : 'pass');
+}
+
+section('building the .mcpack');
+if (!result.error) {
+	const { blob, count, slug, notes } = await SkinPack.buildPack([result], { packName: PACK_NAME, slim: SLIM });
+	log(`packed ${count} skin as "${PACK_NAME}" (slug ${slug}) — ${blob.size} bytes`, 'pass');
+
+	const zip = await JSZip.loadAsync(blob);
+	log('contents:', 'head');
+	for (const name of Object.keys(zip.files).sort()) {
+		log(`  ${name}  (${zip.files[name]._data ? zip.files[name]._data.uncompressedSize : 0} bytes)`);
+	}
+	log('skins.json:', 'head');
+	log((await zip.file('skins.json').async('string')).split('\n').map((l) => '  ' + l).join('\n'));
+	log('texts/en_US.lang:', 'head');
+	log((await zip.file('texts/en_US.lang').async('string')).split('\n').map((l) => '  ' + l).join('\n'));
+
+	// hand it back to disk
+	const b64 = await zip.generateAsync({ type: 'base64', compression: 'DEFLATE' });
+	const target = new URLSearchParams(location.search).get('out');
+	if (target) {
+		const res = await fetch('/_save?path=' + encodeURIComponent(target), { method: 'POST', body: b64 });
+		log(`saved to ${target}: ${res.ok ? 'ok' : 'FAILED'}`, res.ok ? 'pass' : 'fail');
+	}
+	window.__packBase64 = b64;
+	window.__done = true;
+}
+</script>
+</body>
+</html>
