@@ -10,7 +10,7 @@
 
 import * as Codec from './codec.js';
 import * as CodecV0 from './codec-v0.js';
-import { buildGeometry, legacyGeometry } from './bedrock-geometry.js';
+import { buildGeometry, geometryEntry } from './bedrock-geometry.js';
 
 /** Bedrock identifiers and .lang keys are far pickier than filenames. */
 function slugify(name, fallback) {
@@ -114,8 +114,9 @@ export async function buildPack(skins, options) {
 	const slug = slugify(packName, 'EarsSkins');
 	const zip = new JSZip();
 
-	// Legacy 1.8.0 layout: each geometry is a top-level key on this object.
-	const geometryFile = { format_version: '1.8.0' };
+	// Same layout as the game's own `vanilla` skin pack: one array of entries,
+	// each carrying its identifier inside `description`.
+	const geometries = [];
 	const skinEntries = [];
 	const lang = [`pack.name=${packName}`, `pack.description=Ears skins with baked geometry`, `skinpack.${slug}=${packName}`];
 	const notes = [];
@@ -130,7 +131,7 @@ export async function buildPack(skins, options) {
 		// inheritance, so keep these plain and unambiguous.
 		const identifier = `geometry.${slug}_${id}`;
 		const { bones, unsupported } = buildGeometry(skin.features, { slim: options.slim });
-		geometryFile[identifier] = legacyGeometry(bones);
+		geometries.push(geometryEntry(identifier, bones));
 
 		const fileName = `${id}.png`;
 		zip.file(fileName, skin.dataUrl.split(',')[1], { base64: true });
@@ -146,10 +147,13 @@ export async function buildPack(skins, options) {
 		if (unsupported.length) notes.push(`${skin.name}: ${unsupported.join(', ')} not represented`);
 	});
 
+	// `header.name` is the literal pack name, not a `pack.name` lang key. A key
+	// there is what leaves an imported pack sitting in a folder called
+	// "pack.name" with nothing to show for itself.
 	zip.file('manifest.json', JSON.stringify({
-		format_version: 1,
+		format_version: 2,
 		header: {
-			name: 'pack.name',
+			name: packName,
 			uuid: uuid(),
 			version: [1, 0, 0],
 		},
@@ -162,7 +166,10 @@ export async function buildPack(skins, options) {
 		localization_name: slug,
 	}, null, 2));
 
-	zip.file('geometry.json', JSON.stringify(geometryFile, null, 2));
+	zip.file('geometry.json', JSON.stringify({
+		format_version: '1.12.0',
+		'minecraft:geometry': geometries,
+	}, null, 2));
 
 	zip.file('texts/en_US.lang', lang.join('\n') + '\n');
 

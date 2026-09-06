@@ -131,10 +131,19 @@ Blockbench and measuring it against the Java implementation:
 Multi-segment tails become a chain of parented bones, one per segment, each carrying its own bend
 angle — so a three-segment tail exports as three bones, not one straight quad.
 
-Skin packs use the legacy **1.8.0** geometry format, not the 1.12.0 entity format. That means box UV
-and bone-level rotation only, which is why the snout is built from flat quads in rotated bones the way
-Ears itself draws it rather than as a single box. Getting this wrong is silent: Bedrock discards the
-geometry and falls back to the default player model, so you see 4px arms and no Ears parts.
+The reference for all of this is the game's own skin pack, at
+`data/skin_packs/vanilla/` inside the Minecraft install. The export copies its
+`geometry.humanoid.custom` / `.customSlim` bones verbatim — quirks included, down to the two models
+disagreeing on the sign of the cape pivot — and appends the Ears bones after them, so the only thing
+that ever differs from a stock player is the parts Ears adds.
+
+That pack is `format_version: 2` in the manifest with a **literal** `header.name`, and
+`format_version: "1.12.0"` geometry with entries in a `minecraft:geometry` array. Getting either wrong
+is silent: Bedrock discards the geometry and falls back to the default player model, so you see 4px
+arms and no Ears parts. Box UV and bone-level rotation are used throughout anyway — not because the
+format requires it, but because a zero-depth cube's box UV lands exactly on `[u, v]`, which is what
+Ears' flat quads want. It's also why the snout is built from flat quads in rotated bones the way Ears
+itself draws it rather than as a single box.
 
 ### What doesn't survive the trip
 

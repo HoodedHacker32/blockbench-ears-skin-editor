@@ -2592,7 +2592,10 @@ Move those layers back to the top, or flatten the texture.`,
   }
   function vanillaBones(slim) {
     const armWidth = slim ? 3 : 4;
+    const armY = slim ? 11.5 : 12;
+    const armPivotY = slim ? 21.5 : 22;
     const rightArmX = slim ? -7 : -8;
+    const capeZ = slim ? -3 : 3;
     return [
       { name: "root", pivot: [0, 0, 0] },
       { name: "waist", parent: "root", pivot: [0, 12, 0] },
@@ -2600,10 +2603,7 @@ Move those layers back to the top, or flatten the texture.`,
         name: "body",
         parent: "waist",
         pivot: [0, 24, 0],
-        cubes: [
-          { origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 16] },
-          { origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 32], inflate: 0.25 }
-        ]
+        cubes: [{ origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 16] }]
       },
       {
         name: "head",
@@ -2611,6 +2611,7 @@ Move those layers back to the top, or flatten the texture.`,
         pivot: [0, 24, 0],
         cubes: [{ origin: [-4, 24, -4], size: [8, 8, 8], uv: [0, 0] }]
       },
+      { name: "cape", parent: "body", pivot: [0, 24, capeZ] },
       {
         name: "hat",
         parent: "head",
@@ -2618,42 +2619,60 @@ Move those layers back to the top, or flatten the texture.`,
         cubes: [{ origin: [-4, 24, -4], size: [8, 8, 8], uv: [32, 0], inflate: 0.5 }]
       },
       {
-        name: "rightArm",
-        parent: "body",
-        pivot: [-5, 22, 0],
-        cubes: [
-          { origin: [rightArmX, 12, -2], size: [armWidth, 12, 4], uv: [40, 16] },
-          { origin: [rightArmX, 12, -2], size: [armWidth, 12, 4], uv: [40, 32], inflate: 0.25 }
-        ]
-      },
-      { name: "rightItem", parent: "rightArm", pivot: [-6, 15, 1] },
-      {
         name: "leftArm",
         parent: "body",
-        pivot: [5, 22, 0],
-        cubes: [
-          { origin: [4, 12, -2], size: [armWidth, 12, 4], uv: [32, 48] },
-          { origin: [4, 12, -2], size: [armWidth, 12, 4], uv: [48, 48], inflate: 0.25 }
-        ]
+        pivot: [5, armPivotY, 0],
+        cubes: [{ origin: [4, armY, -2], size: [armWidth, 12, 4], uv: [32, 48] }]
+      },
+      {
+        name: "leftSleeve",
+        parent: "leftArm",
+        pivot: [5, armPivotY, 0],
+        cubes: [{ origin: [4, armY, -2], size: [armWidth, 12, 4], uv: [48, 48], inflate: 0.25 }]
       },
       { name: "leftItem", parent: "leftArm", pivot: [6, 15, 1] },
       {
-        name: "rightLeg",
-        parent: "root",
-        pivot: [-1.9, 12, 0],
-        cubes: [
-          { origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 16] },
-          { origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 32], inflate: 0.25 }
-        ]
+        name: "rightArm",
+        parent: "body",
+        pivot: [-5, armPivotY, 0],
+        cubes: [{ origin: [rightArmX, armY, -2], size: [armWidth, 12, 4], uv: [40, 16] }]
       },
+      {
+        name: "rightSleeve",
+        parent: "rightArm",
+        pivot: [-5, armPivotY, 0],
+        cubes: [{ origin: [rightArmX, armY, -2], size: [armWidth, 12, 4], uv: [40, 32], inflate: 0.25 }]
+      },
+      { name: "rightItem", parent: "rightArm", pivot: [-6, 15, 1] },
       {
         name: "leftLeg",
         parent: "root",
         pivot: [1.9, 12, 0],
-        cubes: [
-          { origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [16, 48] },
-          { origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [0, 48], inflate: 0.25 }
-        ]
+        cubes: [{ origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [16, 48] }]
+      },
+      {
+        name: "leftPants",
+        parent: "leftLeg",
+        pivot: [1.9, 12, 0],
+        cubes: [{ origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [0, 48], inflate: 0.25 }]
+      },
+      {
+        name: "rightLeg",
+        parent: "root",
+        pivot: [-1.9, 12, 0],
+        cubes: [{ origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 16] }]
+      },
+      {
+        name: "rightPants",
+        parent: "rightLeg",
+        pivot: [-1.9, 12, 0],
+        cubes: [{ origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 32], inflate: 0.25 }]
+      },
+      {
+        name: "jacket",
+        parent: "body",
+        pivot: [0, 24, 0],
+        cubes: [{ origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 32], inflate: 0.25 }]
       }
     ];
   }
@@ -2764,13 +2783,16 @@ Move those layers back to the top, or flatten the texture.`,
     }
     return { bones, unsupported };
   }
-  function legacyGeometry(bones) {
+  function geometryEntry(identifier, bones) {
     return {
-      texturewidth: 64,
-      textureheight: 64,
-      visible_bounds_width: 4,
-      visible_bounds_height: 4.5,
-      visible_bounds_offset: [0, 1.5, 0],
+      description: {
+        identifier,
+        texture_width: 64,
+        texture_height: 64,
+        visible_bounds_width: 4,
+        visible_bounds_height: 4.5,
+        visible_bounds_offset: [0, 1.5, 0]
+      },
       bones
     };
   }
@@ -2852,7 +2874,7 @@ Move those layers back to the top, or flatten the texture.`,
     const packName = options.packName || "Ears Skins";
     const slug = slugify(packName, "EarsSkins");
     const zip = new JSZip();
-    const geometryFile = { format_version: "1.8.0" };
+    const geometries = [];
     const skinEntries = [];
     const lang = [`pack.name=${packName}`, `pack.description=Ears skins with baked geometry`, `skinpack.${slug}=${packName}`];
     const notes = [];
@@ -2863,7 +2885,7 @@ Move those layers back to the top, or flatten the texture.`,
       used.add(id);
       const identifier = `geometry.${slug}_${id}`;
       const { bones, unsupported } = buildGeometry(skin.features, { slim: options.slim });
-      geometryFile[identifier] = legacyGeometry(bones);
+      geometries.push(geometryEntry(identifier, bones));
       const fileName = `${id}.png`;
       zip.file(fileName, skin.dataUrl.split(",")[1], { base64: true });
       skinEntries.push({
@@ -2876,9 +2898,9 @@ Move those layers back to the top, or flatten the texture.`,
       if (unsupported.length) notes.push(`${skin.name}: ${unsupported.join(", ")} not represented`);
     });
     zip.file("manifest.json", JSON.stringify({
-      format_version: 1,
+      format_version: 2,
       header: {
-        name: "pack.name",
+        name: packName,
         uuid: uuid(),
         version: [1, 0, 0]
       },
@@ -2889,7 +2911,10 @@ Move those layers back to the top, or flatten the texture.`,
       serialize_name: slug,
       localization_name: slug
     }, null, 2));
-    zip.file("geometry.json", JSON.stringify(geometryFile, null, 2));
+    zip.file("geometry.json", JSON.stringify({
+      format_version: "1.12.0",
+      "minecraft:geometry": geometries
+    }, null, 2));
     zip.file("texts/en_US.lang", lang.join("\n") + "\n");
     const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
     return { blob, notes, count: skinEntries.length, slug };

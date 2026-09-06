@@ -15,11 +15,14 @@
 //
 // Head anchor is therefore (-4, 24, -4) and the torso's (-4, 12, -2).
 //
-// Everything here is expressed with BOX UV and bone-level rotation only, because
-// skin packs use the legacy 1.8.0 geometry format: no per-face UV, and no
-// per-cube rotation. That's not much of a constraint in practice -- Ears draws
-// flat quads, and a zero-depth cube's box UV lands exactly on [u, v], which is
-// precisely what its quads want.
+// Everything here is expressed with BOX UV and bone-level rotation only. That's
+// not a constraint the format imposes -- skin packs use the same 1.12.0
+// geometry the game's own `vanilla` skin pack uses -- it's just what Ears wants:
+// it draws flat quads, and a zero-depth cube's box UV lands exactly on [u, v].
+//
+// The vanilla bones below are copied verbatim from that pack's
+// geometry.humanoid.custom and .customSlim, quirks included, so the only thing
+// that ever differs from a stock player is the Ears parts appended after them.
 // ---------------------------------------------------------------------------
 
 const HEAD = { x: -4, y: 24, z: -4 };
@@ -72,55 +75,67 @@ function anchorZ(earAnchor) {
 }
 
 function vanillaBones(slim) {
+	// Slim arms are 3 wide and hang half a pixel lower than classic ones.
 	const armWidth = slim ? 3 : 4;
+	const armY = slim ? 11.5 : 12;
+	const armPivotY = slim ? 21.5 : 22;
 	const rightArmX = slim ? -7 : -8;
+	// A genuine quirk of the vanilla file: the two models disagree on the sign.
+	const capeZ = slim ? -3 : 3;
+
 	return [
 		{ name: 'root', pivot: [0, 0, 0] },
 		{ name: 'waist', parent: 'root', pivot: [0, 12, 0] },
 		{
 			name: 'body', parent: 'waist', pivot: [0, 24, 0],
-			cubes: [
-				{ origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 16] },
-				{ origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 32], inflate: 0.25 },
-			],
+			cubes: [{ origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 16] }],
 		},
 		{
 			name: 'head', parent: 'body', pivot: [0, 24, 0],
 			cubes: [{ origin: [-4, 24, -4], size: [8, 8, 8], uv: [0, 0] }],
 		},
+		{ name: 'cape', parent: 'body', pivot: [0, 24, capeZ] },
 		{
 			name: 'hat', parent: 'head', pivot: [0, 24, 0],
 			cubes: [{ origin: [-4, 24, -4], size: [8, 8, 8], uv: [32, 0], inflate: 0.5 }],
 		},
 		{
-			name: 'rightArm', parent: 'body', pivot: [-5, 22, 0],
-			cubes: [
-				{ origin: [rightArmX, 12, -2], size: [armWidth, 12, 4], uv: [40, 16] },
-				{ origin: [rightArmX, 12, -2], size: [armWidth, 12, 4], uv: [40, 32], inflate: 0.25 },
-			],
+			name: 'leftArm', parent: 'body', pivot: [5, armPivotY, 0],
+			cubes: [{ origin: [4, armY, -2], size: [armWidth, 12, 4], uv: [32, 48] }],
 		},
-		{ name: 'rightItem', parent: 'rightArm', pivot: [-6, 15, 1] },
 		{
-			name: 'leftArm', parent: 'body', pivot: [5, 22, 0],
-			cubes: [
-				{ origin: [4, 12, -2], size: [armWidth, 12, 4], uv: [32, 48] },
-				{ origin: [4, 12, -2], size: [armWidth, 12, 4], uv: [48, 48], inflate: 0.25 },
-			],
+			name: 'leftSleeve', parent: 'leftArm', pivot: [5, armPivotY, 0],
+			cubes: [{ origin: [4, armY, -2], size: [armWidth, 12, 4], uv: [48, 48], inflate: 0.25 }],
 		},
 		{ name: 'leftItem', parent: 'leftArm', pivot: [6, 15, 1] },
 		{
-			name: 'rightLeg', parent: 'root', pivot: [-1.9, 12, 0],
-			cubes: [
-				{ origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 16] },
-				{ origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 32], inflate: 0.25 },
-			],
+			name: 'rightArm', parent: 'body', pivot: [-5, armPivotY, 0],
+			cubes: [{ origin: [rightArmX, armY, -2], size: [armWidth, 12, 4], uv: [40, 16] }],
 		},
 		{
+			name: 'rightSleeve', parent: 'rightArm', pivot: [-5, armPivotY, 0],
+			cubes: [{ origin: [rightArmX, armY, -2], size: [armWidth, 12, 4], uv: [40, 32], inflate: 0.25 }],
+		},
+		{ name: 'rightItem', parent: 'rightArm', pivot: [-6, 15, 1] },
+		{
 			name: 'leftLeg', parent: 'root', pivot: [1.9, 12, 0],
-			cubes: [
-				{ origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [16, 48] },
-				{ origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [0, 48], inflate: 0.25 },
-			],
+			cubes: [{ origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [16, 48] }],
+		},
+		{
+			name: 'leftPants', parent: 'leftLeg', pivot: [1.9, 12, 0],
+			cubes: [{ origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [0, 48], inflate: 0.25 }],
+		},
+		{
+			name: 'rightLeg', parent: 'root', pivot: [-1.9, 12, 0],
+			cubes: [{ origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 16] }],
+		},
+		{
+			name: 'rightPants', parent: 'rightLeg', pivot: [-1.9, 12, 0],
+			cubes: [{ origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 32], inflate: 0.25 }],
+		},
+		{
+			name: 'jacket', parent: 'body', pivot: [0, 24, 0],
+			cubes: [{ origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 32], inflate: 0.25 }],
 		},
 	];
 }
@@ -230,7 +245,7 @@ function tailBones(features) {
 		});
 
 		// Blades rotated about the tail's own centre line. They have to be their
-		// own bones: the 1.8.0 format has no per-cube rotation.
+		// own bones, so each blade can carry its own rotation.
 		fan.forEach((angle, n) => {
 			bones.push({
 				name: `${name}_blade${n + 1}`,
@@ -275,20 +290,24 @@ export function buildGeometry(features, options) {
 }
 
 /**
- * Wrap bones in the legacy skin-pack geometry entry.
+ * Wrap bones in a skin-pack geometry entry.
  *
- * Skin packs use format_version 1.8.0, where each geometry is a top-level key
- * rather than an entry in a `minecraft:geometry` array. Handing Bedrock a 1.12.0
- * entity geometry here makes it silently fall back to the default player model:
- * default 4px arms and none of the Ears parts.
+ * Skin packs use format_version 1.12.0 -- the same one the game's own `vanilla`
+ * skin pack ships -- where each geometry is an entry in a `minecraft:geometry`
+ * array with its identifier inside `description`. Handing Bedrock a bare
+ * top-level key instead makes it silently fall back to the default player
+ * model: default 4px arms and none of the Ears parts.
  */
-export function legacyGeometry(bones) {
+export function geometryEntry(identifier, bones) {
 	return {
-		texturewidth: 64,
-		textureheight: 64,
-		visible_bounds_width: 4,
-		visible_bounds_height: 4.5,
-		visible_bounds_offset: [0, 1.5, 0],
+		description: {
+			identifier,
+			texture_width: 64,
+			texture_height: 64,
+			visible_bounds_width: 4,
+			visible_bounds_height: 4.5,
+			visible_bounds_offset: [0, 1.5, 0],
+		},
 		bones,
 	};
 }
