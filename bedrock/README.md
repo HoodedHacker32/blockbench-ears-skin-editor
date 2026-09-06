@@ -5,6 +5,11 @@ same unused regions of the 64×64 skin that the [Ears](https://ears.y2k.diy) Jav
 
 **This is not a port of Ears, and it can't be one.** Read the next section before using it.
 
+> **You probably want the skin pack export instead.** The Blockbench plugin can package Ears skins as
+> a Bedrock `.mcpack` with the geometry baked in per skin, which needs no world addon, travels with
+> the player, and keeps each skin's own configuration. See `File > Export > Export Ears Skin Pack`.
+> This addon is only useful when you want one fixed look applied to everyone in a world.
+
 ## What Bedrock can and can't do
 
 Ears works by reading the player's skin PNG at runtime — "magic pixels" for the configuration,

@@ -20,6 +20,7 @@ import * as Fmt from './format.js';
 import * as MeshBuilder from './meshbuilder.js';
 import * as Validate from './validate.js';
 import * as Layers from './layers.js';
+import * as SkinPack from './skinpack.js';
 import { EarsPreview } from './renderer.js';
 
 const PLUGIN_ID = 'ears_skin_editor';
@@ -492,6 +493,115 @@ function exportSkinPng() {
 		content: canvas.toDataURL('image/png'),
 		savetype: 'image',
 	});
+}
+
+/** The open project's skin, shaped like an imported file so it can join a pack. */
+function currentSkinAsFile() {
+	const texture = Skin.getSkinTexture();
+	if (!texture || texture.width !== 64 || texture.height !== 64) return null;
+	if (Skin.isLayered(texture)) texture.updateLayerChanges(true);
+	const working = Skin.readImageData(texture);
+	if (!working) return null;
+	// Bake the wing/cape payload in, exactly as a PNG export would.
+	const canvas = Skin.imageDataToCanvas(composeForEars(working));
+	const name = (Project.name || 'skin').replace(/\.(png|bbmodel)$/i, '') || 'skin';
+	return { name: `${name}.png`, content: canvas.toDataURL('image/png') };
+}
+
+/**
+ * Export a Bedrock skin pack from any number of Ears skins.
+ *
+ * Each skin's magic pixels are read here and turned into geometry, which is the
+ * only way Ears features can reach Bedrock -- a Bedrock addon can't sample a
+ * texture, so it could never work this out for itself at runtime.
+ */
+function exportSkinPack() {
+	Blockbench.import(
+		{
+			extensions: ['png'],
+			type: 'PNG',
+			readtype: 'image',
+			multiple: true,
+			title: 'Choose the skins to package',
+		},
+		async (files) => {
+			const results = [];
+			for (const file of files || []) results.push(await SkinPack.inspectSkin(file));
+
+			const own = currentSkinAsFile();
+			if (own) results.unshift(await SkinPack.inspectSkin(own));
+
+			const usable = results.filter((r) => !r.error);
+			const rejected = results.filter((r) => r.error);
+			if (!usable.length) {
+				Blockbench.showMessageBox({
+					title: 'Nothing to package',
+					message: rejected.length
+						? `None of those could be used:\n\n${rejected.map((r) => `• ${r.name} — ${r.error}`).join('\n')}`
+						: 'No skins were selected.',
+				});
+				return;
+			}
+
+			const summary = usable.map((r) => `• ${r.name} — ${SkinPack.summarise(r)}`).join('\n');
+			const skipped = rejected.length
+				? `\n\nSkipped:\n${rejected.map((r) => `• ${r.name} — ${r.error}`).join('\n')}`
+				: '';
+
+			const dialog = new Dialog('ears_skin_pack', {
+				title: 'Export Ears Skin Pack',
+				width: 560,
+				form: {
+					pack_name: { label: 'Pack name', type: 'text', value: 'Ears Skins' },
+					model: {
+						label: 'Arm style',
+						type: 'select',
+						default: 'wide',
+						options: { wide: 'Wide (Steve)', slim: 'Slim (Alex)' },
+					},
+					info: {
+						type: 'info',
+						text:
+							`${usable.length} skin${usable.length === 1 ? '' : 's'}:\n${summary}${skipped}\n\n` +
+							'Each skin gets geometry built from its own magic pixels. Arm style applies to ' +
+							'the whole pack.',
+					},
+				},
+				onConfirm(form) {
+					dialog.hide();
+					deliverPack(usable, { packName: form.pack_name, slim: form.model === 'slim' });
+				},
+			});
+			dialog.show();
+		}
+	);
+}
+
+async function deliverPack(skins, options) {
+	try {
+		const { blob, notes, count, slug } = await SkinPack.buildPack(skins, options);
+		Blockbench.export({
+			type: 'Skin Pack',
+			extensions: ['mcpack'],
+			name: `${slug}.mcpack`,
+			content: blob,
+			savetype: 'zip',
+		});
+		if (notes.length) {
+			Blockbench.showMessageBox({
+				title: 'Skin pack exported',
+				message:
+					`${count} skin${count === 1 ? '' : 's'} packaged.\n\n` +
+					'Bedrock geometry can\'t express everything Ears does, so these were left out:\n\n' +
+					notes.map((n) => `• ${n}`).join('\n'),
+			});
+		} else {
+			Blockbench.showQuickMessage(`Packaged ${count} skin${count === 1 ? '' : 's'}`, 2500);
+		}
+	} catch (e) {
+		console.error('[Ears] skin pack export failed', e);
+		Blockbench.showMessageBox({ title: 'Export failed', message: String(e && e.message ? e.message : e) });
+	}
 }
 
 function updateNotices() {
@@ -1030,6 +1140,15 @@ Plugin.register(PLUGIN_ID, {
 		});
 		MenuBar.addAction(state.exportAction, 'file.export');
 
+		state.packAction = new Action('export_ears_skin_pack', {
+			name: 'Export Ears Skin Pack…',
+			description: 'Package one or more Ears skins as a Bedrock .mcpack, with geometry built from each skin\'s magic pixels',
+			icon: 'folder_zip',
+			category: 'file',
+			click: () => exportSkinPack(),
+		});
+		MenuBar.addAction(state.packAction, 'file.export');
+
 		on('select_project', queueRefresh);
 		on('load_project', queueRefresh);
 		on('new_project', queueRefresh);
@@ -1052,6 +1171,11 @@ Plugin.register(PLUGIN_ID, {
 			MenuBar.removeAction('file.export.export_ears_skin');
 			state.exportAction.delete();
 			state.exportAction = null;
+		}
+		if (state.packAction) {
+			MenuBar.removeAction('file.export.export_ears_skin_pack');
+			state.packAction.delete();
+			state.packAction = null;
 		}
 		if (state.preview) state.preview.dispose();
 		if (state.panel) state.panel.delete();

@@ -16,6 +16,9 @@ the mod's actual output rather than a reimplementation that drifts.
 - **Import an existing Ears skin and it reads itself.** Choose "Import a PNG…" and if the skin already
   has magic pixels, the dialog detects them and fills every field in. Leave them alone and the original
   bytes are preserved untouched — no lossy re-encode of the quantised values.
+- **Export a Bedrock skin pack.** `File → Export → Export Ears Skin Pack` packages any number of skins
+  as a `.mcpack`, reading each one's magic pixels and baking matching geometry into it — see
+  [Bedrock skin packs](#bedrock-skin-packs).
 - **Export as a single PNG.** `File → Export → Export Ears Skin` writes the one image you upload to
   Mojang, magic pixels and embedded wing/cape included.
 - **A real skin editor, not a side panel.** The format reuses Blockbench's own skin machinery, so you
@@ -104,6 +107,45 @@ anything to show up in game. There is no config file.
   mesh elements. To paint Ears geometry on an existing skin, make an Ears Skin project and choose
   "Import a PNG…" for the texture.
 
+## Bedrock skin packs
+
+`File → Export → Export Ears Skin Pack` turns Ears skins into a Bedrock `.mcpack`. Pick as many PNGs
+as you like; the currently open project is included automatically. Each one is inspected, and the
+dialog tells you what it found before anything is written.
+
+**Why this exists.** Ears is Java-only, and a Bedrock addon can never read magic pixels — resource
+packs are declarative JSON with no texture sampling in Molang, the Script API is gameplay-only, and
+there's no moddable shader stage. But *this plugin* reads them already, so the configuration is
+resolved at export time and baked into per-skin geometry. The pack travels with the player, is visible
+to everyone, and needs no world addon.
+
+The geometry mapping is the same one `src/renderer.js` uses, and was verified by loading the output in
+Blockbench and measuring it against the Java implementation:
+
+| Bone | Bedrock box | Why |
+| --- | --- | --- |
+| `ears` (above) | x −8..8, y 32..40, z 0 | head ends at y 32; the quad is 16 wide and centred |
+| `snout` | derived from the skin's own width/height/depth/offset | head front is z −4 |
+| `tail` | y 3.6..14, z 2..8 for a 30° swing | hangs off the torso, swinging **backward** |
+
+Multi-segment tails become a chain of parented bones, one per segment, each carrying its own bend
+angle — so a three-segment tail exports as three bones, not one straight quad.
+
+### What doesn't survive the trip
+
+Bedrock geometry can't express everything Ears does. The export tells you exactly what it dropped for
+each skin rather than silently producing something wrong:
+
+- **Ear modes** other than above and sides (tall, cross, floppy, out, around, behind) — these need
+  rotated UVs or rotated bone chains that aren't implemented yet.
+- **Tail modes** other than down, back and up.
+- **Claws, horn, chest, emissive.**
+- **Wings and capes** — those are whole PNGs hidden in the skin's alpha channel, and a skin pack has
+  nowhere to put a second texture per skin.
+- **Persona skins can't participate at all**, since they have no editable 64×64 atlas.
+
+Arm style (wide/slim) is chosen once for the whole pack; there's no per-skin override yet.
+
 ## Building
 
 ```bash
@@ -136,6 +178,8 @@ official manipulator does, and that a wing PNG survives the alpha-channel round 
 | `src/format.js` | The "Ears Skin" model format and its setup dialog |
 | `src/presets.js` | Player model definitions and the starting feature presets |
 | `src/regions.js` | Derives which texture pixels the current config reads |
+| `src/bedrock-geometry.js` | Turns an Ears feature set into Bedrock entity geometry |
+| `src/skinpack.js` | Builds the Bedrock `.mcpack` |
 | `src/meshbuilder.js` | Builds the Ears quads as real, paintable Blockbench mesh elements |
 | `src/layers.js` | Writes exact RGB and alpha through managed texture layers |
 | `src/validate.js` | Checks hand-edited magic pixels are something Ears can read |

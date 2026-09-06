@@ -2555,6 +2555,333 @@ Move those layers back to the top, or flatten the texture.`,
   var hex = (px) => [px.r, px.g, px.b].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase();
   var cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
+  // src/bedrock-geometry.js
+  var HEAD = { x: -4, y: 24, z: -4 };
+  var TORSO = { x: -4, y: 12, z: -2 };
+  var TAIL_ANGLE = { DOWN: 30, BACK: 80, UP: 130 };
+  var SUPPORTED_EAR_MODES = ["NONE", "ABOVE", "SIDES"];
+  var SUPPORTED_TAIL_MODES = ["NONE", "DOWN", "BACK", "UP"];
+  function anchorZ(earAnchor) {
+    if (earAnchor === "BACK") return 8;
+    if (earAnchor === "FRONT") return 0;
+    return 4;
+  }
+  function vanillaBones(slim) {
+    const armWidth = slim ? 3 : 4;
+    const rightArmX = slim ? -7 : -8;
+    return [
+      { name: "root", pivot: [0, 0, 0] },
+      { name: "waist", parent: "root", pivot: [0, 12, 0] },
+      {
+        name: "body",
+        parent: "waist",
+        pivot: [0, 24, 0],
+        cubes: [
+          { origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 16] },
+          { origin: [-4, 12, -2], size: [8, 12, 4], uv: [16, 32], inflate: 0.25 }
+        ]
+      },
+      {
+        name: "head",
+        parent: "body",
+        pivot: [0, 24, 0],
+        cubes: [{ origin: [-4, 24, -4], size: [8, 8, 8], uv: [0, 0] }]
+      },
+      {
+        name: "hat",
+        parent: "head",
+        pivot: [0, 24, 0],
+        cubes: [{ origin: [-4, 24, -4], size: [8, 8, 8], uv: [32, 0], inflate: 0.5 }]
+      },
+      {
+        name: "rightArm",
+        parent: "body",
+        pivot: [-5, 22, 0],
+        cubes: [
+          { origin: [rightArmX, 12, -2], size: [armWidth, 12, 4], uv: [40, 16] },
+          { origin: [rightArmX, 12, -2], size: [armWidth, 12, 4], uv: [40, 32], inflate: 0.25 }
+        ]
+      },
+      { name: "rightItem", parent: "rightArm", pivot: [-6, 15, 1] },
+      {
+        name: "leftArm",
+        parent: "body",
+        pivot: [5, 22, 0],
+        cubes: [
+          { origin: [4, 12, -2], size: [armWidth, 12, 4], uv: [32, 48] },
+          { origin: [4, 12, -2], size: [armWidth, 12, 4], uv: [48, 48], inflate: 0.25 }
+        ]
+      },
+      { name: "leftItem", parent: "leftArm", pivot: [6, 15, 1] },
+      {
+        name: "rightLeg",
+        parent: "root",
+        pivot: [-1.9, 12, 0],
+        cubes: [
+          { origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 16] },
+          { origin: [-3.9, 0, -2], size: [4, 12, 4], uv: [0, 32], inflate: 0.25 }
+        ]
+      },
+      {
+        name: "leftLeg",
+        parent: "root",
+        pivot: [1.9, 12, 0],
+        cubes: [
+          { origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [16, 48] },
+          { origin: [-0.1, 0, -2], size: [4, 12, 4], uv: [0, 48], inflate: 0.25 }
+        ]
+      }
+    ];
+  }
+  function quadUV(u, v, w, h) {
+    return {
+      north: { uv: [u, v], uv_size: [w, h] },
+      south: { uv: [u, v], uv_size: [w, h] }
+    };
+  }
+  function earBones(features) {
+    const z = HEAD.z + anchorZ(features.earAnchor);
+    if (features.earMode === "ABOVE") {
+      return [{
+        name: "ears",
+        parent: "head",
+        pivot: [0, 32, z],
+        cubes: [{ origin: [HEAD.x - 4, HEAD.y + 8, z], size: [16, 8, 0], uv: quadUV(24, 0, 16, 8) }]
+      }];
+    }
+    if (features.earMode === "SIDES") {
+      return [
+        {
+          name: "ear_right",
+          parent: "head",
+          pivot: [-8, 28, z],
+          cubes: [{ origin: [HEAD.x - 8, HEAD.y, z], size: [8, 8, 0], uv: quadUV(24, 0, 8, 8) }]
+        },
+        {
+          name: "ear_left",
+          parent: "head",
+          pivot: [8, 28, z],
+          cubes: [{ origin: [HEAD.x + 8, HEAD.y, z], size: [8, 8, 0], uv: quadUV(32, 0, 8, 8) }]
+        }
+      ];
+    }
+    return [];
+  }
+  function snoutBones(features) {
+    const w = features.snoutWidth;
+    const h = features.snoutHeight;
+    const d = features.snoutDepth;
+    const off = features.snoutOffset || 0;
+    if (!(w > 0 && h > 0 && d > 0)) return [];
+    const x = HEAD.x + (8 - w) / 2;
+    const y = HEAD.y + off;
+    const z = HEAD.z - d;
+    return [{
+      name: "snout",
+      parent: "head",
+      pivot: [0, y + h, HEAD.z],
+      cubes: [{
+        origin: [x, y, z],
+        size: [w, h, d],
+        // Ears tiles 1px strips along the depth; a single stretched face is
+        // the closest Bedrock can get.
+        uv: {
+          north: { uv: [0, 2], uv_size: [w, h] },
+          up: { uv: [0, 1], uv_size: [w, 1] },
+          down: { uv: [0, 2 + h], uv_size: [w, 1] },
+          east: { uv: [7, 0], uv_size: [1, h] },
+          west: { uv: [7, 0], uv_size: [1, h] },
+          south: { uv: [0, 2], uv_size: [w, h] }
+        }
+      }]
+    }];
+  }
+  function tailBones(features) {
+    const base = TAIL_ANGLE[features.tailMode];
+    if (base === void 0) return [];
+    const segments = Math.max(1, Math.min(4, features.tailSegments || 1));
+    const segHeight = 12 / segments;
+    const bends = [features.tailBend0, features.tailBend1, features.tailBend2, features.tailBend3];
+    const z = TORSO.z + 4;
+    const top = TORSO.y + 2;
+    const bones = [];
+    for (let i = 0; i < segments; i++) {
+      const pivotY = top - i * segHeight;
+      const rotation = i === 0 ? base + (bends[0] || 0) : bends[i] || 0;
+      bones.push({
+        name: i === 0 ? "tail" : `tail_${i}`,
+        parent: i === 0 ? "body" : i === 1 ? "tail" : `tail_${i - 1}`,
+        pivot: [0, pivotY, z],
+        rotation: [rotation, 0, 0],
+        cubes: [{
+          origin: [-4, pivotY - segHeight, z],
+          size: [8, segHeight, 0],
+          uv: quadUV(56, 16 + i * segHeight, 8, segHeight)
+        }]
+      });
+    }
+    return bones;
+  }
+  function buildGeometry(identifier, features, options) {
+    const slim = !!(options && options.slim);
+    const unsupported = [];
+    if (features.enabled) {
+      if (features.earMode && !SUPPORTED_EAR_MODES.includes(features.earMode)) {
+        unsupported.push(`ear mode ${features.earMode}`);
+      }
+      if (features.tailMode && !SUPPORTED_TAIL_MODES.includes(features.tailMode)) {
+        unsupported.push(`tail mode ${features.tailMode}`);
+      }
+      if (features.claws) unsupported.push("claws");
+      if (features.horn) unsupported.push("horn");
+      if (features.wingMode && features.wingMode !== "NONE") unsupported.push("wings");
+      if (features.capeEnabled) unsupported.push("cape");
+      if (features.chestSize > 0) unsupported.push("chest");
+      if (features.emissive) unsupported.push("emissive");
+    }
+    const bones = vanillaBones(slim);
+    if (features.enabled) {
+      bones.push(...earBones(features), ...snoutBones(features), ...tailBones(features));
+    }
+    return {
+      geometry: {
+        description: {
+          identifier,
+          texture_width: 64,
+          texture_height: 64,
+          visible_bounds_width: 4,
+          visible_bounds_height: 4.5,
+          visible_bounds_offset: [0, 1.5, 0]
+        },
+        bones
+      },
+      unsupported
+    };
+  }
+
+  // src/skinpack.js
+  function slugify(name, fallback) {
+    const slug = String(name || "").replace(/\.png$/i, "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    return slug || fallback;
+  }
+  function uuid() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = Math.random() * 16 | 0;
+      return (c === "x" ? r : r & 3 | 8).toString(16);
+    });
+  }
+  function decodeToImageData2(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0);
+        resolve(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      };
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
+  }
+  function toDataURL2(file) {
+    const content = file && file.content;
+    if (typeof content === "string") {
+      return content.startsWith("data:") ? content : `data:image/png;base64,${content}`;
+    }
+    if (!content) return null;
+    const bytes = content instanceof Uint8Array ? content : new Uint8Array(content);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return `data:image/png;base64,${btoa(binary)}`;
+  }
+  async function inspectSkin(file) {
+    const dataUrl = toDataURL2(file);
+    if (!dataUrl) return { name: file.name, error: "could not read the file" };
+    let imageData;
+    try {
+      imageData = await decodeToImageData2(dataUrl);
+    } catch (e) {
+      return { name: file.name, error: "not a readable PNG" };
+    }
+    if (imageData.width !== 64 || imageData.height !== 64) {
+      return { name: file.name, error: `${imageData.width}x${imageData.height}, needs 64x64` };
+    }
+    const version = detectFormat(imageData);
+    let features = defaultFeatures();
+    if (version === "v1") features = readFeatures(imageData) || features;
+    else if (version === "v0") features = readFeaturesV0(imageData);
+    return { name: file.name, dataUrl, version, features };
+  }
+  function summarise2(result) {
+    const { features, version } = result;
+    if (!features || version === "none" || !features.enabled) return "no Ears data (plain skin)";
+    const bits = [];
+    if (features.earMode !== "NONE") bits.push(`${features.earMode.toLowerCase().replace("_", " ")} ears`);
+    if (features.tailMode !== "NONE") {
+      bits.push(`${features.tailMode.toLowerCase().replace("_", " ")} tail x${features.tailSegments || 1}`);
+    }
+    if (features.snoutWidth > 0) {
+      bits.push(`snout ${features.snoutWidth}x${features.snoutHeight}x${features.snoutDepth}`);
+    }
+    if (features.claws) bits.push("claws");
+    if (features.horn) bits.push("horn");
+    if (features.wingMode && features.wingMode !== "NONE") bits.push("wings");
+    return bits.length ? `${version} \u2014 ${bits.join(", ")}` : `${version} \u2014 nothing enabled`;
+  }
+  async function buildPack(skins, options) {
+    const packName = options.packName || "Ears Skins";
+    const slug = slugify(packName, "EarsSkins");
+    const zip = new JSZip();
+    const geometries = [];
+    const skinEntries = [];
+    const lang = [`pack.name=${packName}`, `pack.description=Ears skins with baked geometry`, `skinpack.${slug}=${packName}`];
+    const notes = [];
+    const used = /* @__PURE__ */ new Set();
+    skins.forEach((skin, index) => {
+      let id = slugify(skin.name, `Skin${index + 1}`);
+      while (used.has(id)) id = `${id}_${index + 1}`;
+      used.add(id);
+      const identifier = `geometry.${slug}.${id}`;
+      const { geometry, unsupported } = buildGeometry(identifier, skin.features, { slim: options.slim });
+      geometries.push(geometry);
+      const fileName = `${id}.png`;
+      zip.file(fileName, skin.dataUrl.split(",")[1], { base64: true });
+      skinEntries.push({
+        localization_name: id,
+        geometry: identifier,
+        texture: fileName,
+        type: "free"
+      });
+      lang.push(`skin.${slug}.${id}=${skin.name.replace(/\.png$/i, "")}`);
+      if (unsupported.length) notes.push(`${skin.name}: ${unsupported.join(", ")} not represented`);
+    });
+    zip.file("manifest.json", JSON.stringify({
+      format_version: 1,
+      header: {
+        name: "pack.name",
+        uuid: uuid(),
+        version: [1, 0, 0]
+      },
+      modules: [{ type: "skin_pack", uuid: uuid(), version: [1, 0, 0] }]
+    }, null, 2));
+    zip.file("skins.json", JSON.stringify({
+      skins: skinEntries,
+      serialize_name: slug,
+      localization_name: slug
+    }, null, 2));
+    zip.file("geometry.json", JSON.stringify({
+      format_version: "1.12.0",
+      "minecraft:geometry": geometries
+    }, null, 2));
+    zip.file("texts/en_US.lang", lang.join("\n") + "\n");
+    const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+    return { blob, notes, count: skinEntries.length, slug };
+  }
+
   // src/index.js
   var PLUGIN_ID = "ears_skin_editor";
   var FORMATS = ["skin", FORMAT_ID];
@@ -2876,6 +3203,101 @@ Move those layers back to the top, or flatten the texture.`,
       content: canvas.toDataURL("image/png"),
       savetype: "image"
     });
+  }
+  function currentSkinAsFile() {
+    const texture = getSkinTexture();
+    if (!texture || texture.width !== 64 || texture.height !== 64) return null;
+    if (isLayered(texture)) texture.updateLayerChanges(true);
+    const working = readImageData(texture);
+    if (!working) return null;
+    const canvas = imageDataToCanvas(composeForEars(working));
+    const name = (Project.name || "skin").replace(/\.(png|bbmodel)$/i, "") || "skin";
+    return { name: `${name}.png`, content: canvas.toDataURL("image/png") };
+  }
+  function exportSkinPack() {
+    Blockbench.import(
+      {
+        extensions: ["png"],
+        type: "PNG",
+        readtype: "image",
+        multiple: true,
+        title: "Choose the skins to package"
+      },
+      async (files) => {
+        const results = [];
+        for (const file of files || []) results.push(await inspectSkin(file));
+        const own = currentSkinAsFile();
+        if (own) results.unshift(await inspectSkin(own));
+        const usable = results.filter((r) => !r.error);
+        const rejected = results.filter((r) => r.error);
+        if (!usable.length) {
+          Blockbench.showMessageBox({
+            title: "Nothing to package",
+            message: rejected.length ? `None of those could be used:
+
+${rejected.map((r) => `\u2022 ${r.name} \u2014 ${r.error}`).join("\n")}` : "No skins were selected."
+          });
+          return;
+        }
+        const summary = usable.map((r) => `\u2022 ${r.name} \u2014 ${summarise2(r)}`).join("\n");
+        const skipped = rejected.length ? `
+
+Skipped:
+${rejected.map((r) => `\u2022 ${r.name} \u2014 ${r.error}`).join("\n")}` : "";
+        const dialog2 = new Dialog("ears_skin_pack", {
+          title: "Export Ears Skin Pack",
+          width: 560,
+          form: {
+            pack_name: { label: "Pack name", type: "text", value: "Ears Skins" },
+            model: {
+              label: "Arm style",
+              type: "select",
+              default: "wide",
+              options: { wide: "Wide (Steve)", slim: "Slim (Alex)" }
+            },
+            info: {
+              type: "info",
+              text: `${usable.length} skin${usable.length === 1 ? "" : "s"}:
+${summary}${skipped}
+
+Each skin gets geometry built from its own magic pixels. Arm style applies to the whole pack.`
+            }
+          },
+          onConfirm(form) {
+            dialog2.hide();
+            deliverPack(usable, { packName: form.pack_name, slim: form.model === "slim" });
+          }
+        });
+        dialog2.show();
+      }
+    );
+  }
+  async function deliverPack(skins, options) {
+    try {
+      const { blob, notes, count, slug } = await buildPack(skins, options);
+      Blockbench.export({
+        type: "Skin Pack",
+        extensions: ["mcpack"],
+        name: `${slug}.mcpack`,
+        content: blob,
+        savetype: "zip"
+      });
+      if (notes.length) {
+        Blockbench.showMessageBox({
+          title: "Skin pack exported",
+          message: `${count} skin${count === 1 ? "" : "s"} packaged.
+
+Bedrock geometry can't express everything Ears does, so these were left out:
+
+` + notes.map((n) => `\u2022 ${n}`).join("\n")
+        });
+      } else {
+        Blockbench.showQuickMessage(`Packaged ${count} skin${count === 1 ? "" : "s"}`, 2500);
+      }
+    } catch (e) {
+      console.error("[Ears] skin pack export failed", e);
+      Blockbench.showMessageBox({ title: "Export failed", message: String(e && e.message ? e.message : e) });
+    }
   }
   function updateNotices() {
     const notices = [];
@@ -3381,6 +3803,14 @@ Move those layers back to the top, or flatten the texture.`,
         click: () => exportSkinPng()
       });
       MenuBar.addAction(state2.exportAction, "file.export");
+      state2.packAction = new Action("export_ears_skin_pack", {
+        name: "Export Ears Skin Pack\u2026",
+        description: "Package one or more Ears skins as a Bedrock .mcpack, with geometry built from each skin's magic pixels",
+        icon: "folder_zip",
+        category: "file",
+        click: () => exportSkinPack()
+      });
+      MenuBar.addAction(state2.packAction, "file.export");
       on("select_project", queueRefresh);
       on("load_project", queueRefresh);
       on("new_project", queueRefresh);
@@ -3401,6 +3831,11 @@ Move those layers back to the top, or flatten the texture.`,
         MenuBar.removeAction("file.export.export_ears_skin");
         state2.exportAction.delete();
         state2.exportAction = null;
+      }
+      if (state2.packAction) {
+        MenuBar.removeAction("file.export.export_ears_skin_pack");
+        state2.packAction.delete();
+        state2.packAction = null;
       }
       if (state2.preview) state2.preview.dispose();
       if (state2.panel) state2.panel.delete();

@@ -17,11 +17,14 @@
 <!-- classic script: `var initCommon` lands on the global object, which is where
      bridge.js expects to find it -->
 <script src="../vendor/ears-common.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <script type="module">
 import * as Codec from '../src/codec.js';
 import * as V0 from '../src/codec-v0.js';
 import * as Bridge from '../src/bridge.js';
+import { buildGeometry } from '../src/bedrock-geometry.js';
+import * as SkinPack from '../src/skinpack.js';
 
 const out = document.getElementById('out');
 let passed = 0, failed = 0;
@@ -185,6 +188,149 @@ section('alfalfa');
 	}
 	const wingQuads = objects.filter((o) => o.texture === 'wing');
 	check(`wing geometry is rendered (${wingQuads.length} quads)`, wingQuads.length > 0);
+}
+
+// --- bedrock geometry -----------------------------------------------------
+section('bedrock geometry');
+{
+	const bone = (g, name) => g.bones.find((b) => b.name === name);
+	const feat = (over) => ({ ...Codec.defaultFeatures(), enabled: true, ...over });
+
+	// The numbers below were verified by loading the geometry in Blockbench and
+	// measuring the world bounding boxes against the Java implementation.
+	{
+		const { geometry } = buildGeometry('geometry.t', feat({
+			earMode: 'ABOVE', earAnchor: 'CENTER',
+			snoutWidth: 4, snoutHeight: 2, snoutDepth: 2, snoutOffset: 1,
+			tailMode: 'DOWN', tailSegments: 1,
+		}));
+		const ears = bone(geometry, 'ears');
+		eq('ABOVE ears origin', ears.cubes[0].origin, [-8, 32, 0]);
+		eq('ABOVE ears size', ears.cubes[0].size, [16, 8, 0]);
+		eq('ABOVE ears samples uv 24,0', ears.cubes[0].uv.north.uv, [24, 0]);
+
+		const snout = bone(geometry, 'snout');
+		eq('snout origin', snout.cubes[0].origin, [-2, 25, -6]);
+		eq('snout size', snout.cubes[0].size, [4, 2, 2]);
+
+		const tail = bone(geometry, 'tail');
+		eq('tail origin', tail.cubes[0].origin, [-4, 2, 2]);
+		eq('tail size', tail.cubes[0].size, [8, 12, 0]);
+		// Positive X swings the tail backward; negative sends it through the body.
+		eq('tail rotation is +30 (backward)', tail.rotation, [30, 0, 0]);
+	}
+
+	{
+		const { geometry } = buildGeometry('geometry.t', feat({ earMode: 'SIDES', earAnchor: 'CENTER' }));
+		eq('SIDES right ear origin', bone(geometry, 'ear_right').cubes[0].origin, [-12, 24, 0]);
+		eq('SIDES left ear origin', bone(geometry, 'ear_left').cubes[0].origin, [4, 24, 0]);
+		eq('SIDES left ear samples uv 32,0', bone(geometry, 'ear_left').cubes[0].uv.north.uv, [32, 0]);
+	}
+
+	{
+		const back = buildGeometry('geometry.t', feat({ earMode: 'ABOVE', earAnchor: 'BACK' })).geometry;
+		eq('BACK anchor pushes ears to z=4', bone(back, 'ears').cubes[0].origin[2], 4);
+	}
+
+	{
+		const { geometry } = buildGeometry('geometry.t', feat({ tailMode: 'UP', tailSegments: 3, tailBend0: 0, tailBend1: 10, tailBend2: -10 }));
+		const segs = geometry.bones.filter((b) => /^tail/.test(b.name));
+		eq('3 tail segments become 3 bones', segs.length, 3);
+		eq('segment height is 12/3', segs[0].cubes[0].size[1], 4);
+		eq('segment pivots step down', segs.map((s) => s.pivot[1]), [14, 10, 6]);
+		eq('UP base angle applies to segment 0', segs[0].rotation[0], 130);
+		eq('later segments carry their own bend', segs[1].rotation[0], 10);
+		eq('segments chain as parents', segs[1].parent, 'tail');
+	}
+
+	{
+		const wide = buildGeometry('geometry.t', feat({})).geometry;
+		const slim = buildGeometry('geometry.t', feat({}), { slim: true }).geometry;
+		eq('wide arm is 4 wide at x -8', [bone(wide, 'rightArm').cubes[0].origin[0], bone(wide, 'rightArm').cubes[0].size[0]], [-8, 4]);
+		eq('slim arm is 3 wide at x -7', [bone(slim, 'rightArm').cubes[0].origin[0], bone(slim, 'rightArm').cubes[0].size[0]], [-7, 3]);
+	}
+
+	{
+		const { unsupported } = buildGeometry('geometry.t', feat({
+			earMode: 'TALL', tailMode: 'STAR', claws: true, horn: true, wingMode: 'SYMMETRIC_DUAL',
+		}));
+		check('reports TALL ears as unsupported', unsupported.some((u) => /TALL/.test(u)));
+		check('reports STAR tail as unsupported', unsupported.some((u) => /STAR/.test(u)));
+		check('reports wings as unsupported', unsupported.includes('wings'));
+		log(`  info  unsupported: ${unsupported.join(', ')}`, 'info');
+	}
+
+	{
+		const off = buildGeometry('geometry.t', { ...Codec.defaultFeatures(), enabled: false }).geometry;
+		check('a plain skin gets no Ears bones', !off.bones.some((b) => /ears|snout|tail/.test(b.name)));
+		check('a plain skin still has a full player model', off.bones.length >= 11);
+	}
+}
+
+// --- skin pack ------------------------------------------------------------
+section('skin pack');
+{
+	const skinPng = async (features) => {
+		const img = blankSkin();
+		if (features) V0.writeFeaturesV0(img, features);
+		const c = document.createElement('canvas');
+		c.width = 64; c.height = 64;
+		c.getContext('2d').putImageData(img, 0, 0);
+		return c.toDataURL('image/png');
+	};
+
+	const foxy = await skinPng({ ...Codec.defaultFeatures(), enabled: true, earMode: 'ABOVE', earAnchor: 'CENTER', tailMode: 'DOWN', tailSegments: 1, snoutWidth: 3, snoutHeight: 2, snoutDepth: 3, snoutOffset: 1 });
+	const plain = await skinPng(null);
+
+	const a = await SkinPack.inspectSkin({ name: 'Foxy.png', content: foxy });
+	const b = await SkinPack.inspectSkin({ name: 'plain skin.png', content: plain });
+	eq('reads Ears data out of a packed skin', [a.version, a.features.earMode, a.features.tailMode], ['v0', 'ABOVE', 'DOWN']);
+	eq('a plain skin reports no data', b.version, 'none');
+	log(`  info  summary: ${SkinPack.summarise(a)}`, 'info');
+
+	const tooSmall = await SkinPack.inspectSkin({ name: 'small.png', content: (() => {
+		const c = document.createElement('canvas'); c.width = 32; c.height = 32; return c.toDataURL('image/png');
+	})() });
+	check('rejects a non-64x64 skin', !!tooSmall.error, tooSmall.error);
+
+	check('JSZip is available', typeof JSZip === 'function');
+	if (typeof JSZip === 'function') {
+		const { blob, count, slug, notes } = await SkinPack.buildPack([a, b], { packName: 'My Ears Pack', slim: false });
+		eq('packaged both skins', count, 2);
+		eq('pack name is slugified for identifiers', slug, 'My_Ears_Pack');
+		check(`produced a zip (${blob.size} bytes)`, blob.size > 0);
+
+		const zip = await JSZip.loadAsync(blob);
+		const names = Object.keys(zip.files).sort();
+		for (const required of ['manifest.json', 'skins.json', 'geometry.json', 'texts/en_US.lang']) {
+			check(`pack contains ${required}`, names.includes(required));
+		}
+		check('pack contains one png per skin', names.filter((n) => n.endsWith('.png')).length === 2, names.join(', '));
+
+		const manifest = JSON.parse(await zip.file('manifest.json').async('string'));
+		eq('manifest declares a skin_pack module', manifest.modules[0].type, 'skin_pack');
+		check('manifest uuids differ', manifest.header.uuid !== manifest.modules[0].uuid);
+
+		const skins = JSON.parse(await zip.file('skins.json').async('string'));
+		const geo = JSON.parse(await zip.file('geometry.json').async('string'));
+		eq('skins.json lists both', skins.skins.length, 2);
+		const geoIds = geo['minecraft:geometry'].map((g) => g.description.identifier);
+		check('every skin points at a geometry that exists',
+			skins.skins.every((s) => geoIds.includes(s.geometry)), `${geoIds.join(', ')}`);
+		check('every skin points at a texture that exists',
+			skins.skins.every((s) => names.includes(s.texture)));
+
+		const lang = await zip.file('texts/en_US.lang').async('string');
+		check('lang names every skin', skins.skins.every((s) => lang.includes(`skin.${slug}.${s.localization_name}=`)), lang);
+
+		// The Ears skin must have gained geometry the plain one hasn't.
+		const withEars = geo['minecraft:geometry'].find((g) => g.description.identifier.endsWith('Foxy'));
+		const without = geo['minecraft:geometry'].find((g) => g.description.identifier.endsWith('plain_skin'));
+		check('the Ears skin got ear/tail/snout bones',
+			withEars.bones.some((x) => x.name === 'ears') && withEars.bones.some((x) => x.name === 'tail') && withEars.bones.some((x) => x.name === 'snout'));
+		check('the plain skin got none', !without.bones.some((x) => /ears|snout|tail/.test(x.name)));
+		log(`  info  notes: ${notes.length ? notes.join(' | ') : '(none)'}`, 'info');
+	}
 }
 
 section('result');
