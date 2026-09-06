@@ -1,0 +1,22 @@
+{
+  "format_version": "1.8.0",
+  "animations": {
+    "animation.ears.features": {
+      "loop": true,
+      "bones": {
+        "ears_above":      { "scale": "v.ears_mode == 1 ? 1 : 0" },
+        "ears_side_left":  { "scale": "v.ears_mode == 2 ? 1 : 0" },
+        "ears_side_right": { "scale": "v.ears_mode == 2 ? 1 : 0" },
+        "snout":           { "scale": "v.ears_snout > 0 ? 1 : 0" },
+        "tail": {
+          "scale": "v.ears_tail > 0 ? 1 : 0",
+          "rotation": [
+            "v.ears_tail == 1 ? 30 : (v.ears_tail == 2 ? 80 : (v.ears_tail == 3 ? 130 : 0)) + math.sin(q.life_time * 90) * 2",
+            0,
+            0
+          ]
+        }
+      }
+    }
+  }
+}

@@ -22,7 +22,13 @@ createServer(async (req, res) => {
 		return;
 	}
 	if (req.method === 'OPTIONS') {
-		res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'POST,GET,OPTIONS' }).end();
+		res.writeHead(204, {
+			'Access-Control-Allow-Origin': '*',
+			'Access-Control-Allow-Headers': '*',
+			'Access-Control-Allow-Methods': 'POST,GET,OPTIONS',
+			// Chrome refuses https -> http://localhost without this preflight answer.
+			'Access-Control-Allow-Private-Network': 'true',
+		}).end();
 		return;
 	}
 
@@ -39,6 +45,7 @@ createServer(async (req, res) => {
 			'Cache-Control': 'no-store',
 			// so the built plugin can be pulled into web.blockbench.net for testing
 			'Access-Control-Allow-Origin': '*',
+			'Access-Control-Allow-Private-Network': 'true',
 		});
 		res.end(body);
 	} catch {

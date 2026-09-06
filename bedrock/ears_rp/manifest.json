@@ -1,0 +1,17 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Ears Skin Support (Resources)",
+    "description": "Renders Ears-style ears, tail and snout from the unused regions of a player's skin.",
+    "uuid": "0a1dc68a-d04d-4043-8c5c-a4bc32d10eca",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 21, 0]
+  },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "f674694d-73af-48fa-86ad-f29ae42db3c5",
+      "version": [1, 0, 0]
+    }
+  ]
+}

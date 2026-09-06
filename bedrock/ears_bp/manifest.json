@@ -1,0 +1,29 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Ears Skin Support (Behaviour)",
+    "description": "Per-player configuration for the Ears skin resource pack. Use /scriptevent ears:config",
+    "uuid": "7a32f090-e7db-472b-b146-2484e684b3be",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 21, 0]
+  },
+  "modules": [
+    {
+      "type": "data",
+      "uuid": "d2dd1e95-799d-4aec-bbd0-7f3f105c6d08",
+      "version": [1, 0, 0]
+    },
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "b7c1a5e2-4f3d-4b8a-9c6e-1d2f3a4b5c6d",
+      "entry": "scripts/main.js",
+      "version": [1, 0, 0]
+    }
+  ],
+  "dependencies": [
+    { "module_name": "@minecraft/server", "version": "1.11.0" },
+    { "module_name": "@minecraft/server-ui", "version": "1.1.0" },
+    { "uuid": "0a1dc68a-d04d-4043-8c5c-a4bc32d10eca", "version": [1, 0, 0] }
+  ]
+}
