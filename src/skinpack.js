@@ -10,7 +10,7 @@
 
 import * as Codec from './codec.js';
 import * as CodecV0 from './codec-v0.js';
-import { buildGeometry } from './bedrock-geometry.js';
+import { buildGeometry, legacyGeometry } from './bedrock-geometry.js';
 
 /** Bedrock identifiers and .lang keys are far pickier than filenames. */
 function slugify(name, fallback) {
@@ -114,7 +114,8 @@ export async function buildPack(skins, options) {
 	const slug = slugify(packName, 'EarsSkins');
 	const zip = new JSZip();
 
-	const geometries = [];
+	// Legacy 1.8.0 layout: each geometry is a top-level key on this object.
+	const geometryFile = { format_version: '1.8.0' };
 	const skinEntries = [];
 	const lang = [`pack.name=${packName}`, `pack.description=Ears skins with baked geometry`, `skinpack.${slug}=${packName}`];
 	const notes = [];
@@ -125,9 +126,11 @@ export async function buildPack(skins, options) {
 		while (used.has(id)) id = `${id}_${index + 1}`;
 		used.add(id);
 
-		const identifier = `geometry.${slug}.${id}`;
-		const { geometry, unsupported } = buildGeometry(identifier, skin.features, { slim: options.slim });
-		geometries.push(geometry);
+		// One dotted segment only. Bedrock reads `geometry.a:geometry.b` as
+		// inheritance, so keep these plain and unambiguous.
+		const identifier = `geometry.${slug}_${id}`;
+		const { bones, unsupported } = buildGeometry(skin.features, { slim: options.slim });
+		geometryFile[identifier] = legacyGeometry(bones);
 
 		const fileName = `${id}.png`;
 		zip.file(fileName, skin.dataUrl.split(',')[1], { base64: true });
@@ -159,10 +162,7 @@ export async function buildPack(skins, options) {
 		localization_name: slug,
 	}, null, 2));
 
-	zip.file('geometry.json', JSON.stringify({
-		format_version: '1.12.0',
-		'minecraft:geometry': geometries,
-	}, null, 2));
+	zip.file('geometry.json', JSON.stringify(geometryFile, null, 2));
 
 	zip.file('texts/en_US.lang', lang.join('\n') + '\n');
 

@@ -193,48 +193,82 @@ section('alfalfa');
 // --- bedrock geometry -----------------------------------------------------
 section('bedrock geometry');
 {
-	const bone = (g, name) => g.bones.find((b) => b.name === name);
-	const feat = (over) => ({ ...Codec.defaultFeatures(), enabled: true, ...over });
+	const build = (over, opts) => buildGeometry({ ...Codec.defaultFeatures(), enabled: true, ...over }, opts);
+	const bone = (bones, name) => bones.find((b) => b.name === name);
 
-	// The numbers below were verified by loading the geometry in Blockbench and
-	// measuring the world bounding boxes against the Java implementation.
+	// Skin packs use the legacy 1.8.0 format: box UV only, no per-face UV and no
+	// per-cube rotation. A zero-depth cube's box UV lands exactly on [u, v],
+	// which is what Ears' flat quads need. Handing Bedrock a 1.12.0 entity
+	// geometry instead makes it fall back to the default player model.
 	{
-		const { geometry } = buildGeometry('geometry.t', feat({
+		const { bones } = build({
 			earMode: 'ABOVE', earAnchor: 'CENTER',
 			snoutWidth: 4, snoutHeight: 2, snoutDepth: 2, snoutOffset: 1,
 			tailMode: 'DOWN', tailSegments: 1,
-		}));
-		const ears = bone(geometry, 'ears');
-		eq('ABOVE ears origin', ears.cubes[0].origin, [-8, 32, 0]);
-		eq('ABOVE ears size', ears.cubes[0].size, [16, 8, 0]);
-		eq('ABOVE ears samples uv 24,0', ears.cubes[0].uv.north.uv, [24, 0]);
+		});
+		const ears = bone(bones, 'ears').cubes[0];
+		eq('ABOVE ears origin', ears.origin, [-8, 32, 0]);
+		eq('ABOVE ears size', ears.size, [16, 8, 0]);
+		eq('ABOVE ears uses box uv 24,0', ears.uv, [24, 0]);
+		check('no per-face uv anywhere', !JSON.stringify(bones).includes('"north"'));
 
-		const snout = bone(geometry, 'snout');
-		eq('snout origin', snout.cubes[0].origin, [-2, 25, -6]);
-		eq('snout size', snout.cubes[0].size, [4, 2, 2]);
-
-		const tail = bone(geometry, 'tail');
+		const tail = bone(bones, 'tail');
 		eq('tail origin', tail.cubes[0].origin, [-4, 2, 2]);
 		eq('tail size', tail.cubes[0].size, [8, 12, 0]);
-		// Positive X swings the tail backward; negative sends it through the body.
 		eq('tail rotation is +30 (backward)', tail.rotation, [30, 0, 0]);
 	}
 
 	{
-		const { geometry } = buildGeometry('geometry.t', feat({ earMode: 'SIDES', earAnchor: 'CENTER' }));
-		eq('SIDES right ear origin', bone(geometry, 'ear_right').cubes[0].origin, [-12, 24, 0]);
-		eq('SIDES left ear origin', bone(geometry, 'ear_left').cubes[0].origin, [4, 24, 0]);
-		eq('SIDES left ear samples uv 32,0', bone(geometry, 'ear_left').cubes[0].uv.north.uv, [32, 0]);
+		const { bones } = build({ earMode: 'SIDES', earAnchor: 'CENTER' });
+		eq('SIDES right ear origin', bone(bones, 'ear_right').cubes[0].origin, [-12, 24, 0]);
+		eq('SIDES left ear origin', bone(bones, 'ear_left').cubes[0].origin, [4, 24, 0]);
+		eq('SIDES left ear uv', bone(bones, 'ear_left').cubes[0].uv, [32, 0]);
 	}
 
 	{
-		const back = buildGeometry('geometry.t', feat({ earMode: 'ABOVE', earAnchor: 'BACK' })).geometry;
-		eq('BACK anchor pushes ears to z=4', bone(back, 'ears').cubes[0].origin[2], 4);
+		const { bones } = build({ earMode: 'ABOVE', earAnchor: 'BACK' });
+		eq('BACK anchor pushes ears to z=4', bone(bones, 'ears').cubes[0].origin[2], 4);
+	}
+
+	// The snout can't be a box: box UV offsets every face by the depth, and the
+	// strips Ears reads sit at x=0 where no positive offset can reach. It is
+	// built from flat quads in rotated bones instead, as Ears draws it.
+	{
+		const { bones } = build({ snoutWidth: 4, snoutHeight: 2, snoutDepth: 3, snoutOffset: 1 });
+		eq('snout front quad', bone(bones, 'snout').cubes[0], { origin: [-2, 25, -7], size: [4, 2, 0], uv: [0, 2] });
+		eq('snout top is rotated -90 about X', bone(bones, 'snout_top').rotation, [-90, 0, 0]);
+		eq('one top strip per pixel of depth', bone(bones, 'snout_top').cubes.length, 3);
+		eq('first top strip uses uv 0,1', bone(bones, 'snout_top').cubes[0].uv, [0, 1]);
+		eq('later top strips repeat uv 0,0', bone(bones, 'snout_top').cubes[1].uv, [0, 0]);
+		eq('first bottom strip sits below the front', bone(bones, 'snout_bottom').cubes[0].uv, [0, 4]);
+		eq('sides are rotated 90 about Y', bone(bones, 'snout_right').rotation, [0, 90, 0]);
+		eq('side strips are 1 wide', bone(bones, 'snout_right').cubes[0].size, [1, 2, 0]);
+		eq('first side strip uses uv 7,0', bone(bones, 'snout_right').cubes[0].uv, [7, 0]);
+
+		// Those strips are authored as flat XY quads and only become horizontal
+		// once the bone rotation is applied, so check where they actually land
+		// rather than trusting the authored coordinates.
+		const rotX = (deg, pivot, p) => {
+			const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+			const dy = p[1] - pivot[1], dz = p[2] - pivot[2];
+			return [p[0], pivot[1] + dy * c - dz * s, pivot[2] + dy * s + dz * c];
+		};
+		const top = bone(bones, 'snout_top');
+		const y1 = 24 + 1 + 2; // head bottom + offset + height
+		for (let k = 0; k < 3; k++) {
+			const cube = top.cubes[k];
+			const lo = rotX(-90, top.pivot, cube.origin);
+			const hi = rotX(-90, top.pivot, [cube.origin[0], cube.origin[1] + 1, cube.origin[2]]);
+			const zs = [lo[2], hi[2]].sort((a, b) => a - b).map((n) => +n.toFixed(6));
+			check(`top strip ${k} lies flat on the snout roof`, Math.abs(lo[1] - y1) < 1e-6 && Math.abs(hi[1] - y1) < 1e-6,
+				`y ${lo[1]}, ${hi[1]}`);
+			eq(`top strip ${k} covers its 1px of depth`, zs, [-4 - k - 1, -4 - k]);
+		}
 	}
 
 	{
-		const { geometry } = buildGeometry('geometry.t', feat({ tailMode: 'UP', tailSegments: 3, tailBend0: 0, tailBend1: 10, tailBend2: -10 }));
-		const segs = geometry.bones.filter((b) => /^tail/.test(b.name));
+		const { bones } = build({ tailMode: 'UP', tailSegments: 3, tailBend0: 0, tailBend1: 10, tailBend2: -10 });
+		const segs = bones.filter((b) => /^tail(_\d+)?$/.test(b.name));
 		eq('3 tail segments become 3 bones', segs.length, 3);
 		eq('segment height is 12/3', segs[0].cubes[0].size[1], 4);
 		eq('segment pivots step down', segs.map((s) => s.pivot[1]), [14, 10, 6]);
@@ -243,42 +277,41 @@ section('bedrock geometry');
 		eq('segments chain as parents', segs[1].parent, 'tail');
 	}
 
+	// Cross/star blades have to be their own bones: 1.8.0 has no per-cube rotation.
 	{
-		const wide = buildGeometry('geometry.t', feat({})).geometry;
-		const slim = buildGeometry('geometry.t', feat({}), { slim: true }).geometry;
+		const { bones } = build({ tailMode: 'CROSS', tailSegments: 2, tailBend0: -44, tailBend1: 18 });
+		const blade = bone(bones, 'tail_blade1');
+		check('CROSS adds a blade bone', !!blade);
+		eq('blade is rotated 90 about Y', blade.rotation, [0, 90, 0]);
+		eq('blade is parented to its segment', blade.parent, 'tail');
+		eq('blade pivots on the centre line', blade.pivot[0], 0);
+		check('bent CROSS uses a 90deg base', Math.abs(bone(bones, 'tail').rotation[0] - (90 - 44)) < 0.001);
+		check('the second segment gets its own blade', !!bone(bones, 'tail_1_blade1'));
+
+		const flat = build({ tailMode: 'CROSS', tailSegments: 1, tailBend0: 0 }).bones;
+		eq('unbent CROSS uses an 80deg base', bone(flat, 'tail').rotation[0], 80);
+
+		const star = build({ tailMode: 'STAR', tailSegments: 1 }).bones;
+		eq('STAR fans three blades', star.filter((b) => /_blade\d$/.test(b.name)).map((b) => b.rotation[1]), [45, 90, 135]);
+
+		const overlap = build({ tailMode: 'CROSS_OVERLAP', tailSegments: 2 }).bones;
+		eq('overlap leaves segment 0 alone', bone(overlap, 'tail').cubes[0].size[1], 6);
+		eq('overlap extends later segments by 4', bone(overlap, 'tail_1').cubes[0].size[1], 10);
+	}
+
+	{
+		const wide = build({}).bones;
+		const slim = build({}, { slim: true }).bones;
 		eq('wide arm is 4 wide at x -8', [bone(wide, 'rightArm').cubes[0].origin[0], bone(wide, 'rightArm').cubes[0].size[0]], [-8, 4]);
 		eq('slim arm is 3 wide at x -7', [bone(slim, 'rightArm').cubes[0].origin[0], bone(slim, 'rightArm').cubes[0].size[0]], [-7, 3]);
+		eq('slim left arm is 3 wide at x 4', [bone(slim, 'leftArm').cubes[0].origin[0], bone(slim, 'leftArm').cubes[0].size[0]], [4, 3]);
+		check('slim still gets its Ears bones', build({ earMode: 'ABOVE' }, { slim: true }).bones.some((b) => b.name === 'ears'));
 	}
 
 	{
-		// CROSS adds one blade at 90 degrees about the tail's own centre line;
-		// STAR adds three. Both keep the plain quad as the first cube.
-		const cross = buildGeometry('geometry.t', feat({ tailMode: 'CROSS', tailSegments: 2, tailBend0: -44, tailBend1: 18 })).geometry;
-		const seg0 = cross.bones.find((b) => b.name === 'tail');
-		eq('CROSS segment has 2 cubes', seg0.cubes.length, 2);
-		eq('CROSS blade is rotated 90 about Y', seg0.cubes[1].rotation, [0, 90, 0]);
-		eq('CROSS blade pivots on the centre line', seg0.cubes[1].pivot[0], 0);
-		// bend0 is non-zero, so the base angle is 90 rather than 80.
-		check('bent CROSS uses a 90deg base', Math.abs(seg0.rotation[0] - (90 - 44)) < 0.001, `${seg0.rotation[0]}`);
-
-		const flat = buildGeometry('geometry.t', feat({ tailMode: 'CROSS', tailSegments: 1, tailBend0: 0 })).geometry;
-		eq('unbent CROSS uses an 80deg base', flat.bones.find((b) => b.name === 'tail').rotation[0], 80);
-
-		const star = buildGeometry('geometry.t', feat({ tailMode: 'STAR', tailSegments: 1 })).geometry;
-		eq('STAR segment has 4 cubes', star.bones.find((b) => b.name === 'tail').cubes.length, 4);
-		eq('STAR blades fan at 45/90/135',
-			star.bones.find((b) => b.name === 'tail').cubes.slice(1).map((c) => c.rotation[1]), [45, 90, 135]);
-
-		const overlap = buildGeometry('geometry.t', feat({ tailMode: 'CROSS_OVERLAP', tailSegments: 2 })).geometry;
-		const segs = overlap.bones.filter((b) => /^tail/.test(b.name));
-		eq('overlap leaves segment 0 alone', segs[0].cubes[0].size[1], 6);
-		eq('overlap extends later segments by 4', segs[1].cubes[0].size[1], 10);
-	}
-
-	{
-		const { unsupported } = buildGeometry('geometry.t', feat({
+		const { unsupported } = build({
 			earMode: 'TALL', tailMode: 'VERTICAL', claws: true, horn: true, wingMode: 'SYMMETRIC_DUAL',
-		}));
+		});
 		check('reports TALL ears as unsupported', unsupported.some((u) => /TALL/.test(u)));
 		check('reports VERTICAL tail as unsupported', unsupported.some((u) => /VERTICAL/.test(u)));
 		check('reports wings as unsupported', unsupported.includes('wings'));
@@ -286,9 +319,9 @@ section('bedrock geometry');
 	}
 
 	{
-		const off = buildGeometry('geometry.t', { ...Codec.defaultFeatures(), enabled: false }).geometry;
-		check('a plain skin gets no Ears bones', !off.bones.some((b) => /ears|snout|tail/.test(b.name)));
-		check('a plain skin still has a full player model', off.bones.length >= 11);
+		const { bones } = buildGeometry({ ...Codec.defaultFeatures(), enabled: false });
+		check('a plain skin gets no Ears bones', !bones.some((b) => /ears|snout|tail/.test(b.name)));
+		check('a plain skin still has a full player model', bones.length >= 11);
 	}
 }
 
@@ -320,7 +353,7 @@ section('skin pack');
 
 	check('JSZip is available', typeof JSZip === 'function');
 	if (typeof JSZip === 'function') {
-		const { blob, count, slug, notes } = await SkinPack.buildPack([a, b], { packName: 'My Ears Pack', slim: false });
+		const { blob, count, slug } = await SkinPack.buildPack([a, b], { packName: 'My Ears Pack', slim: true });
 		eq('packaged both skins', count, 2);
 		eq('pack name is slugified for identifiers', slug, 'My_Ears_Pack');
 		check(`produced a zip (${blob.size} bytes)`, blob.size > 0);
@@ -338,8 +371,18 @@ section('skin pack');
 
 		const skins = JSON.parse(await zip.file('skins.json').async('string'));
 		const geo = JSON.parse(await zip.file('geometry.json').async('string'));
+
+		// The format that actually matters: 1.8.0, geometries as top-level keys.
+		eq('geometry.json is the legacy 1.8.0 format', geo.format_version, '1.8.0');
+		check('geometries are top-level keys, not a minecraft:geometry array', !geo['minecraft:geometry']);
+		const geoIds = Object.keys(geo).filter((k) => k !== 'format_version');
+		eq('one geometry per skin', geoIds.length, 2);
+		check('identifiers have a single dotted segment',
+			geoIds.every((id) => id.split('.').length === 2), geoIds.join(', '));
+		check('every geometry declares its texture size',
+			geoIds.every((id) => geo[id].texturewidth === 64 && geo[id].textureheight === 64));
+
 		eq('skins.json lists both', skins.skins.length, 2);
-		const geoIds = geo['minecraft:geometry'].map((g) => g.description.identifier);
 		check('every skin points at a geometry that exists',
 			skins.skins.every((s) => geoIds.includes(s.geometry)), `${geoIds.join(', ')}`);
 		check('every skin points at a texture that exists',
@@ -348,13 +391,14 @@ section('skin pack');
 		const lang = await zip.file('texts/en_US.lang').async('string');
 		check('lang names every skin', skins.skins.every((s) => lang.includes(`skin.${slug}.${s.localization_name}=`)), lang);
 
-		// The Ears skin must have gained geometry the plain one hasn't.
-		const withEars = geo['minecraft:geometry'].find((g) => g.description.identifier.endsWith('Foxy'));
-		const without = geo['minecraft:geometry'].find((g) => g.description.identifier.endsWith('plain_skin'));
+		const withEars = geo[geoIds.find((id) => id.endsWith('Foxy'))];
+		const without = geo[geoIds.find((id) => id.endsWith('plain_skin'))];
 		check('the Ears skin got ear/tail/snout bones',
 			withEars.bones.some((x) => x.name === 'ears') && withEars.bones.some((x) => x.name === 'tail') && withEars.bones.some((x) => x.name === 'snout'));
 		check('the plain skin got none', !without.bones.some((x) => /ears|snout|tail/.test(x.name)));
-		log(`  info  notes: ${notes.length ? notes.join(' | ') : '(none)'}`, 'info');
+		// The pack was built slim, so both models must carry slim arms.
+		check('slim carried through to the packaged geometry',
+			[withEars, without].every((g) => g.bones.find((x) => x.name === 'rightArm').cubes[0].size[0] === 3));
 	}
 }
 

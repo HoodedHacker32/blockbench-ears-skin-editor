@@ -2584,6 +2584,7 @@ Move those layers back to the top, or flatten the texture.`,
     "STAR",
     "STAR_OVERLAP"
   ];
+  var quad = (x, y, z, w, h, u, v) => ({ origin: [x, y, z], size: [w, h, 0], uv: [u, v] });
   function anchorZ(earAnchor) {
     if (earAnchor === "BACK") return 8;
     if (earAnchor === "FRONT") return 0;
@@ -2656,12 +2657,6 @@ Move those layers back to the top, or flatten the texture.`,
       }
     ];
   }
-  function quadUV(u, v, w, h) {
-    return {
-      north: { uv: [u, v], uv_size: [w, h] },
-      south: { uv: [u, v], uv_size: [w, h] }
-    };
-  }
   function earBones(features) {
     const z = HEAD.z + anchorZ(features.earAnchor);
     if (features.earMode === "ABOVE") {
@@ -2669,23 +2664,13 @@ Move those layers back to the top, or flatten the texture.`,
         name: "ears",
         parent: "head",
         pivot: [0, 32, z],
-        cubes: [{ origin: [HEAD.x - 4, HEAD.y + 8, z], size: [16, 8, 0], uv: quadUV(24, 0, 16, 8) }]
+        cubes: [quad(HEAD.x - 4, HEAD.y + 8, z, 16, 8, 24, 0)]
       }];
     }
     if (features.earMode === "SIDES") {
       return [
-        {
-          name: "ear_right",
-          parent: "head",
-          pivot: [-8, 28, z],
-          cubes: [{ origin: [HEAD.x - 8, HEAD.y, z], size: [8, 8, 0], uv: quadUV(24, 0, 8, 8) }]
-        },
-        {
-          name: "ear_left",
-          parent: "head",
-          pivot: [8, 28, z],
-          cubes: [{ origin: [HEAD.x + 8, HEAD.y, z], size: [8, 8, 0], uv: quadUV(32, 0, 8, 8) }]
-        }
+        { name: "ear_right", parent: "head", pivot: [-8, 28, z], cubes: [quad(HEAD.x - 8, HEAD.y, z, 8, 8, 24, 0)] },
+        { name: "ear_left", parent: "head", pivot: [8, 28, z], cubes: [quad(HEAD.x + 8, HEAD.y, z, 8, 8, 32, 0)] }
       ];
     }
     return [];
@@ -2696,28 +2681,26 @@ Move those layers back to the top, or flatten the texture.`,
     const d = features.snoutDepth;
     const off = features.snoutOffset || 0;
     if (!(w > 0 && h > 0 && d > 0)) return [];
-    const x = HEAD.x + (8 - w) / 2;
-    const y = HEAD.y + off;
-    const z = HEAD.z - d;
-    return [{
-      name: "snout",
-      parent: "head",
-      pivot: [0, y + h, HEAD.z],
-      cubes: [{
-        origin: [x, y, z],
-        size: [w, h, d],
-        // Ears tiles 1px strips along the depth; a single stretched face is
-        // the closest Bedrock can get.
-        uv: {
-          north: { uv: [0, 2], uv_size: [w, h] },
-          up: { uv: [0, 1], uv_size: [w, 1] },
-          down: { uv: [0, 2 + h], uv_size: [w, 1] },
-          east: { uv: [7, 0], uv_size: [1, h] },
-          west: { uv: [7, 0], uv_size: [1, h] },
-          south: { uv: [0, 2], uv_size: [w, h] }
-        }
-      }]
-    }];
+    const x0 = HEAD.x + (8 - w) / 2;
+    const y0 = HEAD.y + off;
+    const y1 = y0 + h;
+    const zBack = HEAD.z;
+    const zFront = zBack - d;
+    const bones = [
+      { name: "snout", parent: "head", pivot: [0, y1, zBack], cubes: [quad(x0, y0, zFront, w, h, 0, 2)] }
+    ];
+    const top = { name: "snout_top", parent: "snout", pivot: [0, y1, zBack], rotation: [-90, 0, 0], cubes: [] };
+    const bottom = { name: "snout_bottom", parent: "snout", pivot: [0, y0, zBack], rotation: [90, 0, 0], cubes: [] };
+    const right = { name: "snout_right", parent: "snout", pivot: [x0, 0, zBack], rotation: [0, 90, 0], cubes: [] };
+    const left = { name: "snout_left", parent: "snout", pivot: [x0 + w, 0, zBack], rotation: [0, 90, 0], cubes: [] };
+    for (let k = 0; k < d; k++) {
+      top.cubes.push(quad(x0, y1 + k, zBack, w, 1, 0, k === 0 ? 1 : 0));
+      bottom.cubes.push(quad(x0, y0 - k - 1, zBack, w, 1, 0, k === 0 ? 2 + h : 3 + h));
+      right.cubes.push(quad(x0 + k, y0, zBack, 1, h, 7, k === 0 ? 0 : 4));
+      left.cubes.push(quad(x0 + w + k, y0, zBack, 1, h, 7, k === 0 ? 0 : 4));
+    }
+    bones.push(top, bottom, right, left);
+    return bones;
   }
   function tailBones(features) {
     const bend0 = features.tailBend0 || 0;
@@ -2737,31 +2720,28 @@ Move those layers back to the top, or flatten the texture.`,
       const ofs = i === 0 ? 0 : overlap;
       const height = segHeight + ofs;
       const bottom = pivotY - segHeight;
-      const cubes = [{
-        origin: [-4, bottom, z],
-        size: [8, height, 0],
-        uv: quadUV(56, 16 + i * segHeight - ofs, 8, height)
-      }];
-      for (const angle of fan) {
-        cubes.push({
-          origin: [-4, bottom, z],
-          size: [8, height, 0],
-          pivot: [0, bottom, z],
-          rotation: [0, angle, 0],
-          uv: quadUV(56, 16 + i * segHeight - ofs, 8, height)
-        });
-      }
+      const v = 16 + i * segHeight - ofs;
+      const name = i === 0 ? "tail" : `tail_${i}`;
       bones.push({
-        name: i === 0 ? "tail" : `tail_${i}`,
+        name,
         parent: i === 0 ? "body" : i === 1 ? "tail" : `tail_${i - 1}`,
         pivot: [0, pivotY, z],
         rotation: [rotation, 0, 0],
-        cubes
+        cubes: [quad(-4, bottom, z, 8, height, 56, v)]
+      });
+      fan.forEach((angle, n) => {
+        bones.push({
+          name: `${name}_blade${n + 1}`,
+          parent: name,
+          pivot: [0, bottom, z],
+          rotation: [0, angle, 0],
+          cubes: [quad(-4, bottom, z, 8, height, 56, v)]
+        });
       });
     }
     return bones;
   }
-  function buildGeometry(identifier, features, options) {
+  function buildGeometry(features, options) {
     const slim = !!(options && options.slim);
     const unsupported = [];
     if (features.enabled) {
@@ -2782,19 +2762,16 @@ Move those layers back to the top, or flatten the texture.`,
     if (features.enabled) {
       bones.push(...earBones(features), ...snoutBones(features), ...tailBones(features));
     }
+    return { bones, unsupported };
+  }
+  function legacyGeometry(bones) {
     return {
-      geometry: {
-        description: {
-          identifier,
-          texture_width: 64,
-          texture_height: 64,
-          visible_bounds_width: 4,
-          visible_bounds_height: 4.5,
-          visible_bounds_offset: [0, 1.5, 0]
-        },
-        bones
-      },
-      unsupported
+      texturewidth: 64,
+      textureheight: 64,
+      visible_bounds_width: 4,
+      visible_bounds_height: 4.5,
+      visible_bounds_offset: [0, 1.5, 0],
+      bones
     };
   }
 
@@ -2875,7 +2852,7 @@ Move those layers back to the top, or flatten the texture.`,
     const packName = options.packName || "Ears Skins";
     const slug = slugify(packName, "EarsSkins");
     const zip = new JSZip();
-    const geometries = [];
+    const geometryFile = { format_version: "1.8.0" };
     const skinEntries = [];
     const lang = [`pack.name=${packName}`, `pack.description=Ears skins with baked geometry`, `skinpack.${slug}=${packName}`];
     const notes = [];
@@ -2884,9 +2861,9 @@ Move those layers back to the top, or flatten the texture.`,
       let id = slugify(skin.name, `Skin${index + 1}`);
       while (used.has(id)) id = `${id}_${index + 1}`;
       used.add(id);
-      const identifier = `geometry.${slug}.${id}`;
-      const { geometry, unsupported } = buildGeometry(identifier, skin.features, { slim: options.slim });
-      geometries.push(geometry);
+      const identifier = `geometry.${slug}_${id}`;
+      const { bones, unsupported } = buildGeometry(skin.features, { slim: options.slim });
+      geometryFile[identifier] = legacyGeometry(bones);
       const fileName = `${id}.png`;
       zip.file(fileName, skin.dataUrl.split(",")[1], { base64: true });
       skinEntries.push({
@@ -2912,10 +2889,7 @@ Move those layers back to the top, or flatten the texture.`,
       serialize_name: slug,
       localization_name: slug
     }, null, 2));
-    zip.file("geometry.json", JSON.stringify({
-      format_version: "1.12.0",
-      "minecraft:geometry": geometries
-    }, null, 2));
+    zip.file("geometry.json", JSON.stringify(geometryFile, null, 2));
     zip.file("texts/en_US.lang", lang.join("\n") + "\n");
     const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
     return { blob, notes, count: skinEntries.length, slug };

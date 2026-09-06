@@ -131,6 +131,11 @@ Blockbench and measuring it against the Java implementation:
 Multi-segment tails become a chain of parented bones, one per segment, each carrying its own bend
 angle — so a three-segment tail exports as three bones, not one straight quad.
 
+Skin packs use the legacy **1.8.0** geometry format, not the 1.12.0 entity format. That means box UV
+and bone-level rotation only, which is why the snout is built from flat quads in rotated bones the way
+Ears itself draws it rather than as a single box. Getting this wrong is silent: Bedrock discards the
+geometry and falls back to the default player model, so you see 4px arms and no Ears parts.
+
 ### What doesn't survive the trip
 
 Bedrock geometry can't express everything Ears does. The export tells you exactly what it dropped for

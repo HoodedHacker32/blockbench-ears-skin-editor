@@ -81,14 +81,15 @@ if (result.error) {
 
 section('geometry generated for it');
 if (!result.error) {
-	const { geometry, unsupported } = buildGeometry('geometry.test.catmaid', result.features, { slim: SLIM });
+	const { bones, unsupported } = buildGeometry(result.features, { slim: SLIM });
+	const geometry = { bones };
 	const ears = geometry.bones.filter((b) => /^(ears|ear_|snout|tail)/.test(b.name));
 	log(`${geometry.bones.length} bones total, ${ears.length} of them from Ears`, 'pass');
 	for (const b of ears) {
 		const c = b.cubes && b.cubes[0];
 		log(`  ${b.name.padEnd(12)} origin ${JSON.stringify(c.origin)} size ${JSON.stringify(c.size)}` +
 			(b.rotation ? ` rot ${JSON.stringify(b.rotation)}` : '') +
-			(c.uv && c.uv.north ? ` uv ${JSON.stringify(c.uv.north.uv)}` : ''));
+			(c.uv ? ` uv ${JSON.stringify(c.uv)}` : ''));
 	}
 	log(unsupported.length ? `not representable in Bedrock: ${unsupported.join(', ')}` : 'everything it uses is representable',
 		unsupported.length ? 'info' : 'pass');

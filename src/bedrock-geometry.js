@@ -1,26 +1,29 @@
 // ---------------------------------------------------------------------------
-// Turns an Ears feature set into Bedrock entity geometry.
+// Turns an Ears feature set into Bedrock skin geometry.
 //
 // Bedrock can't read magic pixels -- no addon can sample a texture -- so the
 // configuration is resolved here, at export time, and baked into a skin pack.
 // Each skin gets geometry matching its own pixels.
 //
-// Coordinate mapping (same derivation as src/renderer.js, and verified by
-// loading the output in Blockbench): Ears anchors at a cuboid's
-// (minX, maxY, minZ) in Minecraft ModelPart space where +Y points DOWN. Bedrock
-// geometry shares the X/Z convention with +Y up, so:
+// Coordinate mapping (same derivation as src/renderer.js, verified by loading
+// the output in Blockbench): Ears anchors at a cuboid's (minX, maxY, minZ) in
+// Minecraft ModelPart space where +Y points DOWN. Bedrock geometry shares the
+// X/Z convention with +Y up, so:
 //
 //     origin  -> (cube.minX, cube.bottomY, cube.minZ)
 //     Ears +X -> +X,  Ears +Y -> -Y,  Ears +Z -> +Z
 //
 // Head anchor is therefore (-4, 24, -4) and the torso's (-4, 12, -2).
+//
+// Everything here is expressed with BOX UV and bone-level rotation only, because
+// skin packs use the legacy 1.8.0 geometry format: no per-face UV, and no
+// per-cube rotation. That's not much of a constraint in practice -- Ears draws
+// flat quads, and a zero-depth cube's box UV lands exactly on [u, v], which is
+// precisely what its quads want.
 // ---------------------------------------------------------------------------
 
 const HEAD = { x: -4, y: 24, z: -4 };
 const TORSO = { x: -4, y: 12, z: -2 };
-
-/** Ears' base tail angle per mode, from EarsRenderer. */
-const TAIL_ANGLE = { DOWN: 30, BACK: 80, UP: 130 };
 
 /**
  * BACK and the cross/star family share one rule in EarsRenderer: 90 degrees when
@@ -36,7 +39,7 @@ function tailBaseAngle(mode, bend0) {
 }
 
 /**
- * Extra quads fanned around the tail's centre line. CROSS adds one at 90
+ * Extra blades fanned around the tail's centre line. CROSS adds one at 90
  * degrees; STAR adds three at 45, 90 and 135, making a star in cross-section.
  */
 function tailFan(mode) {
@@ -50,11 +53,16 @@ function tailOverlap(mode) {
 	return mode === 'CROSS_OVERLAP' || mode === 'STAR_OVERLAP' ? 4 : 0;
 }
 
-/** Which modes we can express as Bedrock geometry. */
 export const SUPPORTED_EAR_MODES = ['NONE', 'ABOVE', 'SIDES'];
 export const SUPPORTED_TAIL_MODES = [
 	'NONE', 'DOWN', 'BACK', 'UP', 'CROSS', 'CROSS_OVERLAP', 'STAR', 'STAR_OVERLAP',
 ];
+
+/**
+ * A flat quad in the XY plane. Zero depth means box UV puts the north face at
+ * exactly [u, v] at size [w, h] -- no per-face UV needed.
+ */
+const quad = (x, y, z, w, h, u, v) => ({ origin: [x, y, z], size: [w, h, 0], uv: [u, v] });
 
 /** Ears' EarAnchor as a Z offset from the front of the head. */
 function anchorZ(earAnchor) {
@@ -117,43 +125,35 @@ function vanillaBones(slim) {
 	];
 }
 
-/**
- * A zero-thickness quad. Ears textures the back of each quad from a separate,
- * 90-degree-rotated region; Bedrock per-face UV can mirror but not rotate, so
- * both faces use the front region.
- */
-function quadUV(u, v, w, h) {
-	return {
-		north: { uv: [u, v], uv_size: [w, h] },
-		south: { uv: [u, v], uv_size: [w, h] },
-	};
-}
-
 function earBones(features) {
 	const z = HEAD.z + anchorZ(features.earAnchor);
 	if (features.earMode === 'ABOVE') {
 		// translate(-4,-16,0) then a 16x8 quad -- sits directly on top of the head.
 		return [{
 			name: 'ears', parent: 'head', pivot: [0, 32, z],
-			cubes: [{ origin: [HEAD.x - 4, HEAD.y + 8, z], size: [16, 8, 0], uv: quadUV(24, 0, 16, 8) }],
+			cubes: [quad(HEAD.x - 4, HEAD.y + 8, z, 16, 8, 24, 0)],
 		}];
 	}
 	if (features.earMode === 'SIDES') {
 		// translate(-8,-8,0), then +16 on X for the second ear.
 		return [
-			{
-				name: 'ear_right', parent: 'head', pivot: [-8, 28, z],
-				cubes: [{ origin: [HEAD.x - 8, HEAD.y, z], size: [8, 8, 0], uv: quadUV(24, 0, 8, 8) }],
-			},
-			{
-				name: 'ear_left', parent: 'head', pivot: [8, 28, z],
-				cubes: [{ origin: [HEAD.x + 8, HEAD.y, z], size: [8, 8, 0], uv: quadUV(32, 0, 8, 8) }],
-			},
+			{ name: 'ear_right', parent: 'head', pivot: [-8, 28, z], cubes: [quad(HEAD.x - 8, HEAD.y, z, 8, 8, 24, 0)] },
+			{ name: 'ear_left', parent: 'head', pivot: [8, 28, z], cubes: [quad(HEAD.x + 8, HEAD.y, z, 8, 8, 32, 0)] },
 		];
 	}
 	return [];
 }
 
+/**
+ * The snout, built the way Ears builds it: a front quad plus 1px strips tiled
+ * along the depth for the top, bottom and both sides.
+ *
+ * It can't be a plain box. Box UV offsets every face by the cube's depth, so a
+ * box deep enough to be a snout would sample the wrong pixels -- and the strips
+ * Ears reads sit at x=0, which no positive UV offset can reach. Rotated bones
+ * holding flat quads land on them exactly, and match the original more closely
+ * into the bargain.
+ */
 function snoutBones(features) {
 	const w = features.snoutWidth;
 	const h = features.snoutHeight;
@@ -161,26 +161,34 @@ function snoutBones(features) {
 	const off = features.snoutOffset || 0;
 	if (!(w > 0 && h > 0 && d > 0)) return [];
 
-	// translate((8-w)/2, -(offset+h), -depth)
-	const x = HEAD.x + (8 - w) / 2;
-	const y = HEAD.y + off;
-	const z = HEAD.z - d;
-	return [{
-		name: 'snout', parent: 'head', pivot: [0, y + h, HEAD.z],
-		cubes: [{
-			origin: [x, y, z], size: [w, h, d],
-			// Ears tiles 1px strips along the depth; a single stretched face is
-			// the closest Bedrock can get.
-			uv: {
-				north: { uv: [0, 2], uv_size: [w, h] },
-				up: { uv: [0, 1], uv_size: [w, 1] },
-				down: { uv: [0, 2 + h], uv_size: [w, 1] },
-				east: { uv: [7, 0], uv_size: [1, h] },
-				west: { uv: [7, 0], uv_size: [1, h] },
-				south: { uv: [0, 2], uv_size: [w, h] },
-			},
-		}],
-	}];
+	// translate((8-w)/2, -(offset+h), -depth) from the head anchor.
+	const x0 = HEAD.x + (8 - w) / 2;
+	const y0 = HEAD.y + off;      // bottom
+	const y1 = y0 + h;            // top
+	const zBack = HEAD.z;         // against the face
+	const zFront = zBack - d;
+
+	const bones = [
+		{ name: 'snout', parent: 'head', pivot: [0, y1, zBack], cubes: [quad(x0, y0, zFront, w, h, 0, 2)] },
+	];
+
+	// Rotating -90 about X maps a quad at y = y1 + k onto the horizontal strip
+	// covering z = zBack - k - 1 .. zBack - k.
+	const top = { name: 'snout_top', parent: 'snout', pivot: [0, y1, zBack], rotation: [-90, 0, 0], cubes: [] };
+	const bottom = { name: 'snout_bottom', parent: 'snout', pivot: [0, y0, zBack], rotation: [90, 0, 0], cubes: [] };
+	const right = { name: 'snout_right', parent: 'snout', pivot: [x0, 0, zBack], rotation: [0, 90, 0], cubes: [] };
+	const left = { name: 'snout_left', parent: 'snout', pivot: [x0 + w, 0, zBack], rotation: [0, 90, 0], cubes: [] };
+
+	for (let k = 0; k < d; k++) {
+		// Ears uses a distinct first strip, then repeats one texture for the rest.
+		top.cubes.push(quad(x0, y1 + k, zBack, w, 1, 0, k === 0 ? 1 : 0));
+		bottom.cubes.push(quad(x0, y0 - k - 1, zBack, w, 1, 0, k === 0 ? 2 + h : 3 + h));
+		right.cubes.push(quad(x0 + k, y0, zBack, 1, h, 7, k === 0 ? 0 : 4));
+		left.cubes.push(quad(x0 + w + k, y0, zBack, 1, h, 7, k === 0 ? 0 : 4));
+	}
+
+	bones.push(top, bottom, right, left);
+	return bones;
 }
 
 function tailBones(features) {
@@ -210,41 +218,36 @@ function tailBones(features) {
 		const ofs = i === 0 ? 0 : overlap;
 		const height = segHeight + ofs;
 		const bottom = pivotY - segHeight;
+		const v = 16 + i * segHeight - ofs;
 
-		const cubes = [{
-			origin: [-4, bottom, z],
-			size: [8, height, 0],
-			uv: quadUV(56, 16 + i * segHeight - ofs, 8, height),
-		}];
-
-		// Extra blades rotated about the tail's own centre line. Ears does this by
-		// translating to x=4 in tail space (x=0 here), rotating about Y, and
-		// translating back.
-		for (const angle of fan) {
-			cubes.push({
-				origin: [-4, bottom, z],
-				size: [8, height, 0],
-				pivot: [0, bottom, z],
-				rotation: [0, angle, 0],
-				uv: quadUV(56, 16 + i * segHeight - ofs, 8, height),
-			});
-		}
-
+		const name = i === 0 ? 'tail' : `tail_${i}`;
 		bones.push({
-			name: i === 0 ? 'tail' : `tail_${i}`,
+			name,
 			parent: i === 0 ? 'body' : i === 1 ? 'tail' : `tail_${i - 1}`,
 			pivot: [0, pivotY, z],
 			rotation: [rotation, 0, 0],
-			cubes,
+			cubes: [quad(-4, bottom, z, 8, height, 56, v)],
+		});
+
+		// Blades rotated about the tail's own centre line. They have to be their
+		// own bones: the 1.8.0 format has no per-cube rotation.
+		fan.forEach((angle, n) => {
+			bones.push({
+				name: `${name}_blade${n + 1}`,
+				parent: name,
+				pivot: [0, bottom, z],
+				rotation: [0, angle, 0],
+				cubes: [quad(-4, bottom, z, 8, height, 56, v)],
+			});
 		});
 	}
 	return bones;
 }
 
 /**
- * @returns {{geometry: object, unsupported: string[]}}
+ * @returns {{bones: object[], unsupported: string[]}}
  */
-export function buildGeometry(identifier, features, options) {
+export function buildGeometry(features, options) {
 	const slim = !!(options && options.slim);
 	const unsupported = [];
 
@@ -268,18 +271,24 @@ export function buildGeometry(identifier, features, options) {
 		bones.push(...earBones(features), ...snoutBones(features), ...tailBones(features));
 	}
 
+	return { bones, unsupported };
+}
+
+/**
+ * Wrap bones in the legacy skin-pack geometry entry.
+ *
+ * Skin packs use format_version 1.8.0, where each geometry is a top-level key
+ * rather than an entry in a `minecraft:geometry` array. Handing Bedrock a 1.12.0
+ * entity geometry here makes it silently fall back to the default player model:
+ * default 4px arms and none of the Ears parts.
+ */
+export function legacyGeometry(bones) {
 	return {
-		geometry: {
-			description: {
-				identifier,
-				texture_width: 64,
-				texture_height: 64,
-				visible_bounds_width: 4,
-				visible_bounds_height: 4.5,
-				visible_bounds_offset: [0, 1.5, 0],
-			},
-			bones,
-		},
-		unsupported,
+		texturewidth: 64,
+		textureheight: 64,
+		visible_bounds_width: 4,
+		visible_bounds_height: 4.5,
+		visible_bounds_offset: [0, 1.5, 0],
+		bones,
 	};
 }
